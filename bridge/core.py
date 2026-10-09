@@ -36,6 +36,7 @@ for path in (str(LAMBDA), str(ROOT)):
     if path not in sys.path:
         sys.path.insert(0, path)
 import build_model  # noqa: E402
+from . import sshsig  # noqa: E402
 import messaging  # noqa: E402
 import retail  # noqa: E402
 
@@ -691,16 +692,38 @@ def status(state):
                     if p not in state.get("phases", {})), None))
 
 
+def verify_release(tag, runner=run, signers=None):
+    """Check a release tag's SSH signature in-process (no ssh-keygen needed) against allowed_signers."""
+    signers = signers or SIGNERS
+    result = runner(["git", "-C", str(ROOT), "cat-file", "tag", tag], encoding="utf-8")
+    commit = runner(["git", "-C", str(ROOT), "rev-parse", tag + "^{commit}"], encoding="utf-8")
+    try:
+        if result.returncode != 0 or commit.returncode != 0:
+            raise sshsig.BadSignature("not_a_tag")
+        keys = [sshsig.public_key_blob(line) for line in Path(signers).read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.startswith("#")]
+        payload, armoured = sshsig.split_signed_tag(result.stdout.encode("utf-8"))
+        signer = sshsig.verify(payload, armoured, keys)
+    except (sshsig.BadSignature, OSError, ValueError) as error:
+        raise Stop("release_unverified", "Release %s is not signed by a key in allowed_signers (%s). Don't run anything "
+                   "from it; tell the owner." % (tag, error)) from None
+    emit("release_verified", tag=tag, signer=signer, commit=commit.stdout.strip())
+    return signer
+
+
 def update(state, tag, allow_unsigned=False, runner=run, sleep=time.sleep):
     repo = ROOT  # git finds the enclosing repository from here
-    # Verified with the signers file of the release already installed, before the new one is checked out.
-    verify = ["-c", "gpg.ssh.allowedSignersFile=" + SIGNERS.as_posix(), "verify-tag", tag]
-    for args in (["fetch", "--tags", "-q"], verify, ["checkout", "-q", tag]):
-        if args is verify and allow_unsigned:
-            continue
-        if runner(["git", "-C", str(repo), *args]).returncode != 0:
-            raise Stop("update_refused", "Release %s could not be fetched or its signature could not be verified. "
-                       "Nothing was deployed." % tag)
+    if runner(["git", "-C", str(repo), "fetch", "--tags", "-q"]).returncode != 0:
+        raise Stop("update_refused", "Release %s could not be fetched. Nothing was deployed." % tag)
+    if not allow_unsigned:
+        # Checked with the signers file of the release already installed, before the new one is checked out.
+        try:
+            verify_release(tag, runner)
+        except Stop:
+            raise Stop("update_refused", "Release %s is not signed by a key in the installed allowed_signers. "
+                       "Nothing was deployed." % tag) from None
+    if runner(["git", "-C", str(repo), "checkout", "-q", tag]).returncode != 0:
+        raise Stop("update_refused", "Release %s could not be checked out. Nothing was deployed." % tag)
     emit("release_checked_out", tag=tag)
     deploy(state, runner, sleep)
 

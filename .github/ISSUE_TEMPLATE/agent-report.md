@@ -11,7 +11,7 @@ labels: agent-report
 
 **Requirements** (see AGENT-REQUIREMENTS.md; say how the agent met each one, or why it couldn't)
 - [ ] Answering 1: authenticated HTTPS webhook
-- [ ] Answering 2: a 2xx reply (which status?) within 2 seconds
+- [ ] Answering 2: a 2xx reply (which status?) within 4 seconds
 - [ ] Answering 3: runs unattended
 - [ ] Answering 4–5: one callback within 120 seconds, tokens kept private
 - [ ] Setup 1: a shell with Python, Node and git

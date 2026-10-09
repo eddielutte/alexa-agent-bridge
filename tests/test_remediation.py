@@ -253,6 +253,31 @@ class BoundaryTests(unittest.TestCase):
                 self.assertNotIsInstance(caught.exception,messaging.DispatchNotSent)
             self.assertEqual(calls.count("https://example.test/hook"),1,status)
 
+    def test_webhook_waits_four_seconds_and_token_is_reused_until_near_expiry(self):
+        config = {"webhook_url": "https://example.test/hook", "webhook_key": "FAKE", "client_id": "FAKE", "client_secret": "FAKE"}
+        job = {"id": "job", "token": "FAKE", "api_host": "api.eu.amazonalexa.com"}
+        calls, clock = [], [1000]
+        def sender(method, url, *args):
+            calls.append((url, args[3:]))
+            if "/auth/o2/token" in url:
+                return 200, b'{"access_token":"FAKE-%d","expires_in":3600}' % len(calls)
+            return 202, b""
+        with patch.object(messaging.time, "time", lambda: clock[0]):
+            for t in (1000, 1500, 1000 + 3600 - 299):
+                clock[0] = t
+                messaging.dispatch(config, "owner", "key", job, "test", sender)
+        tokens = [u for u, _ in calls if "/auth/o2/token" in u]
+        hooks = [extra for u, extra in calls if u == "https://example.test/hook"]
+        self.assertEqual(len(tokens), 2)
+        self.assertEqual(hooks, [(messaging.WEBHOOK_TIMEOUT,)] * 3)
+        self.assertEqual(messaging.WEBHOOK_TIMEOUT, 4.0)
+        other_calls = []
+        def other(method, url, *args):
+            other_calls.append(url)
+            return (200, b'{"access_token":"OTHER","expires_in":3600}') if "/auth/o2/token" in url else (200, b"")
+        messaging.dispatch(config, "owner", "key", job, "test", other)
+        self.assertIn("https://api.amazon.com/auth/o2/token", other_calls)
+
     def test_bad_webhook_is_rejected_before_any_network(self):
         for url in ("http://example.test", "https://example.test:bad", "https://example.test/#fragment"):
             with self.assertRaises(messaging.DispatchNotSent):

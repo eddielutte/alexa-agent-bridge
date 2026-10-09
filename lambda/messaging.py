@@ -1,12 +1,18 @@
 """Official callback transport and a single configured agent webhook."""
+import hashlib
 import http.client
 import json
+import time
 import urllib.parse
 
 from retail import REGIONS, TransportError, json_body
 
 # Skill Messaging regions (NA, EU, FE); a callback may only target one of these.
 MESSAGING_HOSTS = {row["messaging_host"] for row in REGIONS.values()}
+# The agent must acknowledge within this; the token exchange keeps the 2 s default (IKI-85).
+WEBHOOK_TIMEOUT = 4.0
+# Skill Messaging token reused within a warm container: {(sender, client, secret digest): (token, refresh_at)}.
+_TOKENS = {}
 
 
 class DispatchNotSent(TransportError):
@@ -35,7 +41,7 @@ def send(method, url, headers, data, allowed_hosts, timeout=2.0):
         connection.close()
 
 
-def messaging_token(config, sender=send):
+def messaging_token(config, sender=send, lifetime=None):
     body = urllib.parse.urlencode({
         "grant_type": "client_credentials", "scope": "alexa:skill_messaging",
         "client_id": config["client_id"], "client_secret": config["client_secret"]}).encode()
@@ -46,7 +52,24 @@ def messaging_token(config, sender=send):
     result = json_body(result)
     if not isinstance(result.get("access_token"), str) or not result["access_token"]:
         raise TransportError("No skill messaging token")
+    if lifetime is not None:
+        expires = result.get("expires_in")
+        lifetime.append(expires if isinstance(expires, int) and expires > 0 else 0)
     return result["access_token"]
+
+
+def reusable_token(config, sender=send, now=None):
+    """Reuse a token until 5 minutes before expiry, so the agent's callback window (120 s) always fits."""
+    now = now or time.time
+    key = (sender, config["client_id"], hashlib.sha256(config["client_secret"].encode("utf-8")).hexdigest())
+    token, refresh_at = _TOKENS.get(key, (None, 0))
+    if token and now() < refresh_at:
+        return token
+    lifetime = []
+    token = messaging_token(config, sender, lifetime)
+    _TOKENS.clear()
+    _TOKENS[key] = (token, now() + lifetime[0] - 300)
+    return token
 
 
 def api_host(endpoint):
@@ -94,7 +117,7 @@ def prepare_dispatch(config, user_id, device_key, job, message, sender):
             or parsed.username or parsed.password or parsed.fragment):
         raise DispatchNotSent("Unsupported webhook destination")
     reply_url = callback_url(user_id, job.get("api_host"))
-    token = messaging_token(config, sender)
+    token = reusable_token(config, sender)
     payload = {"request_id": job["id"], "message": message,
         "reply": {"url": reply_url, "bearer_token": token,
                   "format": "alexa_skill_messaging",
@@ -110,6 +133,6 @@ def dispatch(config, user_id, device_key, job, message, sender=send):
         url, headers, body, hosts = prepare_dispatch(config, user_id, device_key, job, message, sender)
     except (TransportError, ValueError, KeyError, TypeError, UnicodeError):
         raise DispatchNotSent("Request preparation failed; webhook not contacted") from None
-    status, _ = sender("POST", url, headers, body, hosts)
+    status, _ = sender("POST", url, headers, body, hosts, WEBHOOK_TIMEOUT)
     if not 200 <= status < 300:
         raise TransportError("Agent dispatch was not confirmed")

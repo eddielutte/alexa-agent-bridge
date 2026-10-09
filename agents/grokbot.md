@@ -7,10 +7,10 @@
 | Requirement | Grokbot feature | Notes |
 | --- | --- | --- |
 | Answering 1: authenticated HTTPS webhook | A routine with a **webhook trigger** | Grokbot generates the URL and key. It can't read them itself; the owner copies them into secret cards |
-| Answering 2: a 2xx reply within 2 seconds | The trigger acknowledges with 200 and runs the routine afterwards | Proven |
+| Answering 2: a 2xx reply within 4 seconds | The trigger acknowledges with 200 and runs the routine afterwards | Proven, but not always within 2 seconds: on 9 October 2026 a first request after a deploy missed the old 2-second limit (IKI-85) |
 | Answering 3: runs unattended | Routine runs | No approval was asked for the callback to `amazonalexa.com` |
 | Answering 4–5: one callback, tokens kept private | Followed from the routine instructions | Proven |
-| Setup 1: shell | The bot's own computer: Debian Linux with Python 3, Node 20, npm, git and passwordless `sudo` | Files survive between sessions. Survival across a computer restart is unverified; Update, Recover and Reset remove installed packages, which `bridge preflight` reinstalls |
+| Setup 1: shell | The bot's own computer: Debian Linux with Python 3, Node 20, npm and git. No `ssh-keygen` | Admin rights changed: passwordless `sudo` worked on 6 October 2026, but on 9 October the bot couldn't install packages. The bridge needs nothing beyond the listed tools. Files survive between sessions. Survival across a computer restart is unverified; Update, Recover and Reset remove installed packages, which `bridge preflight` reinstalls |
 | Setup 2: browser handover | The bot's browser with **take control** | The bot reads the sign-in redirect from its own address bar |
 | Setup 3: secret store | **Secure secret cards** (“Stored securely, never shown to your Bot”), available to commands as environment variables | Proven |
 | Setup 4: saved instructions | **Saved skills**, stored as `SKILL.md` files | Used for `alexa-bridge-maintenance`; the body is kept word for word |

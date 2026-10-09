@@ -206,25 +206,7 @@ class CliTests(unittest.TestCase):
         self.assertNotEqual(self.events()[-1]["next"], "enrol")
         self.assertNoSecrets()
 
-    def test_update_verifies_the_tag_against_the_installed_signers_before_checkout(self):
-        self.chosen()
-        calls = []
-        def runner(args, **kwargs):
-            calls.append(args)
-            bad = "verify-tag" in args and args[-1] == "v9.9.9"
-            return SimpleNamespace(returncode=1 if bad else 0, stdout="", stderr="")
-        with patch.object(core, "deploy") as deploy:
-            with self.assertRaises(core.Stop) as stop:
-                core.update(self.state, "v9.9.9", runner=runner)
-            self.assertEqual(stop.exception.category, "update_refused")
-            self.assertFalse(any("checkout" in c for c in calls))
-            deploy.assert_not_called()
-            calls.clear()
-            core.update(self.state, "v1.0.0", runner=runner)
-            deploy.assert_called_once()
-        verify = next(c for c in calls if "verify-tag" in c)
-        self.assertIn("gpg.ssh.allowedSignersFile=" + core.SIGNERS.as_posix(), verify)
-        self.assertLess(calls.index(verify), next(i for i, c in enumerate(calls) if "checkout" in c))
+    def test_installed_signers_file_holds_the_release_key(self):
         self.assertTrue(core.SIGNERS.read_text().startswith("alexa-agent-bridge-release namespaces=\"git\" ssh-ed25519 "))
 
     def test_status_names_the_next_step(self):

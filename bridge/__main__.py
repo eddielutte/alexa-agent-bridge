@@ -43,6 +43,8 @@ def main(argv=None):
     test = sub.add_parser("test", help="connection test (or --status) through the simulator")
     test.add_argument("--status", action="store_true")
     sub.add_parser("status", help="show progress and the next step")
+    ver = sub.add_parser("verify", help="check a release tag's signature (built in; no ssh-keygen needed)")
+    ver.add_argument("--tag", required=True)
     up = sub.add_parser("update", help="deploy a newer signed release")
     up.add_argument("--tag", required=True)
     up.add_argument("--allow-unsigned", action="store_true")
@@ -83,6 +85,8 @@ def main(argv=None):
             core.connection_test(state, status_only=args.status)
         elif args.command == "status":
             core.status(state)
+        elif args.command == "verify":
+            core.verify_release(args.tag)
         elif args.command == "update":
             core.update(state, args.tag, args.allow_unsigned)
         elif args.command == "uninstall":

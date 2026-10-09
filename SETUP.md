@@ -34,7 +34,7 @@ Below, `<work>` is your working folder: `~/alexa-bridge` unless your profile's *
 ### 1. Start
 
 1. Clone the repository at the release tag the owner gave you, or the latest signed release, so that `<work>` is the repository root: `git clone --branch <tag> <repository URL> <work>`. The setup tool records this location in `~/.alexa-bridge/state.json` for the maintenance skill.
-   Then check the release signature from inside `<work>`: `git -c gpg.ssh.allowedSignersFile=allowed_signers verify-tag <tag>`. It must print `Good "git" signature for alexa-agent-bridge-release`. If it doesn't, stop and tell the owner; don't run anything from that checkout. For an independent check, the key in `allowed_signers` must also be listed at https://api.github.com/users/eddielutte/ssh_signing_keys.
+   Then check the release signature from inside `<work>`: `python3 -m bridge verify --tag <tag>`. It needs no extra tools. It must report `release_verified` with signer `SHA256:jFE7AQS44EuMt6TVafQICt2UtpwoO9iQCFSQQ0q/j9k`, the fingerprint published in the README and on the maintainer's GitHub account (https://api.github.com/users/eddielutte/ssh_signing_keys). If it stops, or reports a different signer, stop and tell the owner; don't run anything else from that checkout. Where `ssh-keygen` is installed, `git -c gpg.ssh.allowedSignersFile=allowed_signers verify-tag <tag>` gives a second, independent check.
 2. Run `python3 -m bridge preflight`. It checks Python, Node, npm, git and the network, and installs ASK CLI 2.30.7 with `npm install -g`. That needs no root if npm's prefix is a folder you can write to, such as `npm config set prefix ~/.local`, with its `bin` folder on your `PATH`.
 3. Tell the owner, in your own words:
    - what they'll get
@@ -117,6 +117,7 @@ Usually the routine runs on you. If the owner's answers will come from a differe
 | `choose_test_echo` | No test Echo has been chosen | Repeat step 5.3 |
 | `renewal_failed` | Enrolment was sent, but the cloud couldn't renew the sign-in yet | Wait a minute, then run `python3 -m bridge test --status`. Once it no longer reports a sign-in problem, continue at step 5.5 |
 | `setup_card_unavailable` (exit code 1) | The simulator didn't return the skill's setup card | Run `enrol` again once. If it fails again, report it to the owner |
+| `release_unverified` | The tag isn't signed, or not by a key in `allowed_signers` | Don't run anything from that checkout. Tell the owner |
 | `update_refused` | The release couldn't be fetched, or its signature couldn't be verified | Nothing was deployed. Check the tag name with the owner |
 | `confirm_uninstall` | Removal needs confirmation | Confirm with the owner, then add `--yes` |
 | `pack_unreadable` | A drafted language pack file is missing or isn't valid JSON | Fix the file named in the message |

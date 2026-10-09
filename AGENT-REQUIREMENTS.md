@@ -15,7 +15,7 @@ The skill sends each request to one webhook. The routine must:
    - The URL is public HTTPS on port 443, with no user name or password in it.
    - The request is a `POST` with `Authorization: Bearer <key>` and a JSON body: `request_id`, `message` (the owner's words) and `reply` (where and how to send the answer).
    - **Platforms that authenticate differently:** if the platform's webhook carries its secret in the URL instead, put the full URL (with the secret) in `BRIDGE_WEBHOOK_URL` and store any non-empty value as `BRIDGE_WEBHOOK_KEY`. The Bearer header is then simply ignored. Platforms that require a custom header name or HMAC-signed requests aren't supported yet.
-2. **Reply with any 2xx status (such as 200, 202 or 204) within 2 seconds, before doing the work.**
+2. **Reply with any 2xx status (such as 200, 202 or 204) within 4 seconds, before doing the work.**
    - Any other status, including a redirect, or no reply in time, counts as "not confirmed". The skill tells the owner and never resends.
    - The routine runs the work after it has acknowledged.
 3. **Run unattended.** No person approves the run or its outgoing call while the owner waits at the Echo.
@@ -37,7 +37,7 @@ The skill sends each request to one webhook. The routine must:
 The setup agent follows [the setup guide](SETUP.md). It must have:
 
 1. **A Linux or macOS shell it can run commands in.** On Windows, use WSL (untested). ASK CLI's developer sign-in (`ask configure`) asks questions in the terminal. If the agent's shell can't answer them, the owner runs that one command in a terminal on the agent's computer.
-   - Python 3.9 or later, Node.js with npm, and git. `bridge preflight` checks these and installs ASK CLI 2.30.7 without root.
+   - Python 3.9 or later, Node.js with npm, and git. `bridge preflight` checks these and installs ASK CLI 2.30.7 without root. Release signatures are checked by the bridge itself, so `ssh-keygen` isn't needed.
    - Outbound HTTPS to Amazon's sites.
    - Files that stay put between steps. Setup state lives in `~/.alexa-bridge`. Everything resumes after a reset; `preflight` reinstalls what's missing.
 2. **A web browser on the same computer, which it can hand to the owner.** Amazon's developer sign-in returns to a local address (`127.0.0.1`), so a browser elsewhere won't work. The owner signs in to Amazon, enters 2-step codes and solves any CAPTCHA themselves; the agent takes control back afterwards. The agent then reads the final sign-in address from its own address bar into a private file without displaying it. If it can't, the owner copies the address and the agent runs `signin finish --from-clipboard`, or `--from-prompt` for a hidden prompt where there's no desktop clipboard.
