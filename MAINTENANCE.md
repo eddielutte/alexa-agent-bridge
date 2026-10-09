@@ -14,7 +14,7 @@ The owner hears this when Amazon has withdrawn the skill's sign-in. Their Echo l
    1. `signin start`
    2. hand control to the owner
    3. save the maplanding address to a private file
-   4. `signin finish --from-file …`
+   4. `signin finish --from-file …` (if it stops with `signin_check_failed`, run `signin check` a minute later instead of signing in again)
    5. `enrol`
 4. Run `python3 -m bridge test` and ask the owner to confirm they heard the test sentence.
 

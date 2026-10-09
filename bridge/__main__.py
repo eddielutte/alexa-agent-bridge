@@ -29,7 +29,7 @@ def main(argv=None):
     sub.add_parser("create", help="create the Alexa-hosted skill")
     sub.add_parser("deploy", help="push code, build the voice model, enable testing")
     sign = sub.add_parser("signin", help="Amazon sign-in on Amazon's own page")
-    sign.add_argument("step", choices=["start", "finish"])
+    sign.add_argument("step", choices=["start", "finish", "check"])
     sign.add_argument("--open", action="store_true", help="open the page in the default browser")
     source = sign.add_mutually_exclusive_group()
     source.add_argument("--from-file")
@@ -67,6 +67,8 @@ def main(argv=None):
             core.deploy(state)
         elif args.command == "signin" and args.step == "start":
             core.signin_start(state, args.open)
+        elif args.command == "signin" and args.step == "check":
+            core.signin_check(state)
         elif args.command == "signin":
             if not (args.from_file or args.from_clipboard or args.from_prompt):
                 parser.error("signin finish needs --from-file, --from-clipboard or --from-prompt")

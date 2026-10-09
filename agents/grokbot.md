@@ -29,7 +29,7 @@ Use `/workspace/alexa-bridge` as `<work>`, cloned so that it is the repository r
 
 ### Browser handover
 
-Open the page in your own browser and offer the owner **take control**. Wait until they say they're done, then take control back. For the Amazon sign-in, read the `maplanding` address from your own address bar straight into the private file; never paste it into chat.
+Open the page in your own browser and offer the owner **take control**. Wait until they say they're done, then take control back. Take control isn't available in a group chat: on 9 October 2026 a chat started from **New chat** was one, and the sign-ins had to move to the owner's one-to-one chat. Run setup in the one-to-one chat. For the Amazon sign-in, read the `maplanding` address from your own address bar straight into the private file; never paste it into chat.
 
 ### Connecting the routine
 
@@ -46,7 +46,7 @@ In testing, no approval was asked for the routine's POST to an `amazonalexa.com`
 
 When setup finishes, use your skill save tool with the `name` and `description` from [`skills/alexa-bridge-maintenance/SKILL.md`](../skills/alexa-bridge-maintenance/SKILL.md) and its body word for word. The tool rebuilds the header and drops any other header fields, which is fine. If an “Alexa bridge maintenance” skill already exists, rewrite it in place by its id instead of adding a second one. In a trial on 8 October 2026, Grokbot stored a skill like this with its body word for word.
 
-To remove the bridge later, also delete the routine, both secret cards and this skill.
+To remove the bridge later, also delete the routine and this skill. On 9 October 2026 Grokbot had no tool to delete its secret cards, and the owner couldn't find one in the app either. Removing the routine makes the old values useless, and a new setup asks for fresh ones.
 
 ## Known differences
 

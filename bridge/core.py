@@ -520,7 +520,21 @@ def read_redirect(source, prompt=None):
         path.unlink()
 
 
-def register(code, pkce, transport=retail.request):
+SETUP_TIMEOUT = 20.0
+
+
+def amazon(method, url, headers=None, data=None, timeout=SETUP_TIMEOUT, retry=True):
+    """The setup tool's Amazon calls: a slow computer gets 20 s and one retry after a connection failure.
+    The hosted skill keeps retail.request's short default."""
+    try:
+        return retail.request(method, url, headers, data, timeout=timeout)
+    except retail.TransportError:
+        if not retry:
+            raise
+        return retail.request(method, url, headers, data, timeout=timeout)
+
+
+def register(code, pkce, transport=amazon):
     body = {"requested_extensions": ["device_info", "customer_info"],
             "cookies": {"website_cookies": [], "domain": ".amazon.com"},
             "registration_data": {"domain": "Device", "app_version": APP_VERSION, "device_type": DEVICE_TYPE,
@@ -532,15 +546,20 @@ def register(code, pkce, transport=retail.request):
                           "client_domain": "DeviceLegacy"},
             "user_context_map": {"frc": b64(secrets.token_bytes(313))},
             "requested_token_type": ["bearer", "mac_dms", "website_cookies", "store_authentication_cookie"]}
-    status, _, raw = transport("POST", "https://api.amazon.com/auth/register",
-                               {"Content-Type": "application/json", "User-Agent": retail.UA},
-                               json.dumps(body).encode(), timeout=20.0)
+    try:  # never retried: the code works once, and a lost reply may still have registered
+        status, _, raw = transport("POST", "https://api.amazon.com/auth/register",
+                                   {"Content-Type": "application/json", "User-Agent": retail.UA},
+                                   json.dumps(body).encode(), retry=False)
+    except retail.TransportError:
+        raise Stop("signin_unreachable", "Amazon couldn't be reached to finish the sign-in. Start the sign-in again; "
+                   "if a spare \"AioAmazonDevices\" entry appears in the owner's Amazon devices list, they can remove "
+                   "it.") from None
     if status != 200:
         raise Stop("signin_refused", "Amazon did not accept that sign-in (HTTP %d). Start the sign-in again." % status)
     return retail.json_body(raw)["response"]["success"]
 
 
-def signin_finish(state, source, transport=retail.request, renew=retail.renew):
+def signin_finish(state, source, transport=amazon, renew=retail.renew):
     need(state, "choices")
     pkce = read_private("pkce.json", consume=True)
     if not pkce:
@@ -552,25 +571,52 @@ def signin_finish(state, source, transport=retail.request, renew=retail.renew):
                    "address of the /ap/maplanding page.")
     success = register(code, pkce, transport)
     domain = retail.COUNTRIES[state["choices"]["country"]]["domain"]
-    seed = {"schema": 1, "domain": domain, "customer_id": "pending", "locale": state["choices"]["locale"],
-            "refresh_token": success["tokens"]["bearer"]["refresh_token"], "cookies": {},
-            "cookies_refreshed_at": 0, "devices": []}
-    reply = retail.token_request(seed, "auth_cookies", transport)
-    cookies = {}
-    for cookie_domain, rows in reply.get("response", {}).get("tokens", {}).get("cookies", {}).items():
-        if cookie_domain.lstrip(".") in (domain, "alexa." + domain):
-            cookies.update({r["Name"]: r["Value"].strip('"') for r in rows if "Name" in r and "Value" in r})
+    # Kept from here on, so a failed check is repeated with `signin check`, not a new sign-in and registration.
+    write_private("seed.json", {"schema": 1, "domain": domain, "customer_id": "pending",
+                                "locale": state["choices"]["locale"],
+                                "refresh_token": success["tokens"]["bearer"]["refresh_token"], "cookies": {},
+                                "cookies_refreshed_at": 0, "devices": []})
+    state["phases"].pop("signin", None)
+    state["home_region"] = success.get("extensions", {}).get("customer_info", {}).get("home_region")
+    save_state(state)
+    signin_check(state, transport, renew)
+
+
+def signin_check(state, transport=amazon, renew=retail.renew):
+    """Identify the saved registration's account and check that it renews. Safe to repeat."""
+    need(state, "choices")
+    seed = read_private("seed.json")
+    if not seed:
+        raise Stop("signin_needed", "Sign in to Amazon first (signin start, then signin finish).")
+    retry = Stop("signin_check_failed", "Amazon accepted the sign-in, but it couldn't be checked yet. It's saved: "
+                 "run `python3 -m bridge signin check` in a minute. Don't sign in again.")
+    country = retail.COUNTRIES[state["choices"]["country"]]
+    if seed["domain"] != country["domain"]:
+        drop_private("seed.json")
+        raise Stop("signin_needed", "The country changed after signing in. Sign in to Amazon again.")
     try:
-        seed["customer_id"] = retail.retail_get(dict(seed, cookies=cookies), "/api/users/me", transport)["id"]
+        if seed["customer_id"] == "pending":
+            reply = retail.token_request(seed, "auth_cookies", transport)
+            cookies = {}
+            for cookie_domain, rows in reply.get("response", {}).get("tokens", {}).get("cookies", {}).items():
+                if cookie_domain.lstrip(".") in (seed["domain"], "alexa." + seed["domain"]):
+                    cookies.update({r["Name"]: r["Value"].strip('"') for r in rows if "Name" in r and "Value" in r})
+            try:
+                seed["customer_id"] = retail.retail_get(dict(seed, cookies=cookies), "/api/users/me", transport)["id"]
+            except retail.AuthRequired:
+                drop_private("seed.json")
+                raise Stop("signin_wrong_country", "This Amazon account does not belong to %s. Choose the country "
+                           "your Echos are registered in." % country["name"]) from None
+            write_private("seed.json", seed)
+        verified = renew(dict(seed), transport)
     except retail.AuthRequired:
-        raise Stop("signin_wrong_country", "This Amazon account does not belong to %s. Choose the country your "
-                   "Echos are registered in." % retail.COUNTRIES[state["choices"]["country"]]["name"]) from None
-    verified = renew(dict(seed), transport)
-    write_private("seed.json", seed)
+        drop_private("seed.json")
+        raise Stop("signin_refused", "Amazon no longer accepts this sign-in. Start the sign-in again.") from None
+    except retail.TransportError:
+        raise retry from None
     echoes = sorted(d["name"] for d in verified.get("devices", []) if d.get("name"))
     state["echoes"] = echoes
-    region = success.get("extensions", {}).get("customer_info", {}).get("home_region")
-    done(state, "signin", home_region=region, echoes=echoes)
+    done(state, "signin", home_region=state.get("home_region"), echoes=echoes)
 
 
 # --- Enrolment, routine text and tests ---------------------------------------------------------
@@ -580,6 +626,9 @@ def enrol(state, runner=run, sleep=time.sleep, sender=messaging.send):
     seed = read_private("seed.json")
     if not seed:
         raise Stop("signin_needed", "Sign in to Amazon first (signin start, then signin finish).")
+    if "signin" not in state["phases"]:
+        raise Stop("signin_check_failed", "The Amazon sign-in hasn't been checked yet. Run `python3 -m bridge "
+                   "signin check` first.")
     stored = read_private("webhook.json") or {}
     url = os.environ.get("BRIDGE_WEBHOOK_URL") or stored.get("url", "")
     key = os.environ.get("BRIDGE_WEBHOOK_KEY") or stored.get("key", "")
@@ -688,10 +737,12 @@ def connection_test(state, runner=run, sleep=time.sleep, status_only=False):
 
 
 def status(state):
+    step = next((p for p in ("preflight", "choose", "doctor", "dev_auth", "create", "deploy", "signin", "enrol", "test")
+                 if p not in state.get("phases", {})), None)
+    if step == "signin" and (private_dir() / "seed.json").exists():
+        step = "signin check"
     emit("status", choices=state.get("choices"), skill_id=state.get("skill_id"), checkout=str(ROOT),
-         phases=sorted(state.get("phases", {})), echoes=state.get("echoes"),
-         next=next((p for p in ("preflight", "choose", "doctor", "dev_auth", "create", "deploy", "signin", "enrol", "test")
-                    if p not in state.get("phases", {})), None))
+         phases=sorted(state.get("phases", {})), echoes=state.get("echoes"), next=step)
 
 
 RELEASE_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)")

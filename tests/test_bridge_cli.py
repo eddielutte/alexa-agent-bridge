@@ -257,14 +257,17 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(updates), 2)
         self.assertNotIn("FAKE-SECRET", self.out.getvalue())
 
-    def sign_in(self, home_region="EU"):
+    def sign_in(self, home_region="EU", renewed=None):
         core.signin_start(self.chosen())
         url = self.events()[-1]["url"]
         self.assertTrue(url.startswith("https://www.amazon.com/ap/signin?"))
         redirect = Path(self.tmp.name) / "redirect.txt"
         redirect.write_text("https://www.amazon.com/ap/maplanding?openid.oa2.authorization_code=FAKE-CODE")
+        self.amazon_calls = []
         def transport(method, url, headers=None, data=None, **kwargs):
+            self.amazon_calls.append(url)
             if url.endswith("/auth/register"):
+                self.assertEqual(kwargs, {"retry": False})
                 self.assertIn(b"FAKE-CODE", data)
                 return 200, [], json.dumps({"response": {"success": {
                     "tokens": {"bearer": {"refresh_token": "FAKE-REFRESH"}},
@@ -276,10 +279,80 @@ class CliTests(unittest.TestCase):
                 self.assertTrue(url.startswith("https://alexa.amazon.co.uk/"))
                 return 200, [], b'{"id":"CUSTOMER"}'
             self.fail("unexpected " + url)
-        renewed = lambda seed, transport: {**seed, "devices": [{"name": "Office Echo"}, {"name": "Kitchen Echo"}]}
-        core.signin_finish(self.state, str(redirect), transport, renewed)
-        self.assertFalse(redirect.exists())
+        self.transport = transport
+        renewed = renewed or self.renewed
+        try:
+            core.signin_finish(self.state, str(redirect), transport, renewed)
+        finally:
+            self.assertFalse(redirect.exists())
         return self.state
+
+    @staticmethod
+    def renewed(seed, transport):
+        return {**seed, "devices": [{"name": "Office Echo"}, {"name": "Kitchen Echo"}]}
+
+    def test_setup_amazon_calls_wait_longer_and_retry_once(self):
+        attempts = []
+        def flaky(method, url, headers=None, data=None, timeout=None):
+            attempts.append(timeout)
+            if len(attempts) == 1:
+                raise core.retail.TransportError("Amazon connection failed")
+            return 200, [], b"{}"
+        with patch.object(core.retail, "request", flaky):
+            self.assertEqual(core.amazon("POST", "https://api.amazon.com/auth/token")[0], 200)
+            self.assertEqual(attempts, [20.0, 20.0])
+            attempts.clear()
+            with self.assertRaises(core.retail.TransportError):
+                core.amazon("POST", "https://api.amazon.com/auth/register", retry=False)
+            self.assertEqual(attempts, [20.0])
+        self.assertEqual(core.retail.request.__defaults__[-1], 2.0)  # the hosted skill keeps its short timeout
+
+    def test_a_failed_check_keeps_the_registration_for_signin_check(self):
+        def slow(seed, transport):
+            raise core.retail.TransportError("Amazon connection failed")
+        with self.assertRaises(core.Stop) as stop:
+            self.sign_in(renewed=slow)
+        self.assertEqual(stop.exception.category, "signin_check_failed")
+        self.assertEqual(core.read_private("seed.json")["customer_id"], "CUSTOMER")
+        self.assertNotIn("signin", self.state["phases"])
+        self.state["skill_id"] = SKILL
+        with self.assertRaises(core.Stop) as early:
+            core.enrol(self.state, FakeAsk(), sleep=lambda s: None)
+        self.assertEqual(early.exception.category, "signin_check_failed")
+        for phase in ("preflight", "choose", "doctor", "dev_auth", "create", "deploy"):
+            self.state["phases"].setdefault(phase, {})
+        core.status(self.state)
+        self.assertEqual(self.events()[-1]["next"], "signin check")
+        core.signin_check(self.state, self.transport, self.renewed)
+        self.assertEqual(self.state["echoes"], ["Kitchen Echo", "Office Echo"])
+        self.assertEqual(self.state["phases"]["signin"]["home_region"], "EU")
+        self.assertEqual(sum(url.endswith("/auth/register") for url in self.amazon_calls), 1)
+        self.assertNoSecrets()
+
+    def test_a_check_that_fails_before_identifying_the_account_resumes_there(self):
+        state = self.chosen()
+        core.write_private("seed.json", {"schema": 1, "domain": "amazon.co.uk", "customer_id": "pending",
+                                         "locale": "en-GB", "refresh_token": "FAKE-REFRESH", "cookies": {},
+                                         "cookies_refreshed_at": 0, "devices": []})
+        def down(method, url, headers=None, data=None, **kwargs):
+            raise core.retail.TransportError("Amazon connection failed")
+        with self.assertRaises(core.Stop) as stop:
+            core.signin_check(state, down, self.renewed)
+        self.assertEqual(stop.exception.category, "signin_check_failed")
+        self.assertEqual(core.read_private("seed.json")["customer_id"], "pending")
+
+    def test_rejected_or_unreachable_sign_ins_stop_cleanly(self):
+        def rejected(seed, transport):
+            raise core.retail.RegistrationRejected("Registration needs interactive attention")
+        with self.assertRaises(core.Stop) as stop:
+            self.sign_in(renewed=rejected)
+        self.assertEqual(stop.exception.category, "signin_refused")
+        self.assertIsNone(core.read_private("seed.json"))
+        def unreachable(method, url, headers=None, data=None, **kwargs):
+            raise core.retail.TransportError("Amazon connection failed")
+        with self.assertRaises(core.Stop) as stop:
+            core.register("FAKE-CODE", {"serial": "0" * 32, "verifier": "v"}, unreachable)
+        self.assertEqual(stop.exception.category, "signin_unreachable")
 
     def test_signin_builds_a_country_seed_privately(self):
         state = self.sign_in()
