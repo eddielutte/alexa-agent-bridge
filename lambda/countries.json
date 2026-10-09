@@ -1,0 +1,23 @@
+{
+  "regions": {
+    "EU_WEST_1": {"messaging_host": "api.eu.amazonalexa.com"},
+    "US_EAST_1": {"messaging_host": "api.amazonalexa.com"},
+    "US_WEST_2": {"messaging_host": "api.fe.amazonalexa.com"}
+  },
+  "countries": {
+    "GB": {"name": "United Kingdom", "domain": "amazon.co.uk", "locales": ["en-GB"], "region": "EU_WEST_1", "status": "proven"},
+    "IE": {"name": "Ireland", "domain": "amazon.co.uk", "locales": ["en-GB"], "region": "EU_WEST_1", "status": "untested"},
+    "US": {"name": "United States", "domain": "amazon.com", "locales": ["en-US", "es-US"], "region": "US_EAST_1", "status": "untested"},
+    "CA": {"name": "Canada", "domain": "amazon.ca", "locales": ["en-CA", "fr-CA"], "region": "US_EAST_1", "status": "untested"},
+    "MX": {"name": "Mexico", "domain": "amazon.com.mx", "locales": ["es-MX"], "region": "US_EAST_1", "status": "untested"},
+    "BR": {"name": "Brazil", "domain": "amazon.com.br", "locales": ["pt-BR"], "region": "US_EAST_1", "status": "untested"},
+    "IN": {"name": "India", "domain": "amazon.in", "locales": ["en-IN", "hi-IN"], "region": "EU_WEST_1", "status": "untested"},
+    "DE": {"name": "Germany", "domain": "amazon.de", "locales": ["de-DE"], "region": "EU_WEST_1", "status": "untested"},
+    "FR": {"name": "France", "domain": "amazon.fr", "locales": ["fr-FR"], "region": "EU_WEST_1", "status": "untested"},
+    "IT": {"name": "Italy", "domain": "amazon.it", "locales": ["it-IT"], "region": "EU_WEST_1", "status": "untested"},
+    "ES": {"name": "Spain", "domain": "amazon.es", "locales": ["es-ES"], "region": "EU_WEST_1", "status": "untested"},
+    "AU": {"name": "Australia", "domain": "amazon.com.au", "locales": ["en-AU"], "region": "US_WEST_2", "status": "untested"},
+    "NZ": {"name": "New Zealand", "domain": "amazon.com.au", "locales": ["en-AU"], "region": "US_WEST_2", "status": "untested"},
+    "JP": {"name": "Japan", "domain": "amazon.co.jp", "locales": ["ja-JP"], "region": "US_WEST_2", "status": "untested"}
+  }
+}

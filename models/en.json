@@ -1,0 +1,1050 @@
+{
+  "language": "en",
+  "status": "proven",
+  "languageModel": {
+    "intents": [
+      {
+        "name": "UpdateIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "update me on {request}"
+        ]
+      },
+      {
+        "name": "TellIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "tell me {request}"
+        ]
+      },
+      {
+        "name": "SummariseIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "summarise {request}"
+        ]
+      },
+      {
+        "name": "FindIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "find {request}"
+        ]
+      },
+      {
+        "name": "CheckIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "check {request}"
+        ]
+      },
+      {
+        "name": "LookUpIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "look up {request}"
+        ]
+      },
+      {
+        "name": "ExplainIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "explain {request}"
+        ]
+      },
+      {
+        "name": "RemindIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "remind me {request}"
+        ]
+      },
+      {
+        "name": "ScheduleIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "schedule {request}"
+        ]
+      },
+      {
+        "name": "CreateIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "create {request}"
+        ]
+      },
+      {
+        "name": "DraftIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "draft {request}"
+        ]
+      },
+      {
+        "name": "WriteIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "write {request}"
+        ]
+      },
+      {
+        "name": "SendIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "send {request}"
+        ]
+      },
+      {
+        "name": "BookIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "book {request}"
+        ]
+      },
+      {
+        "name": "CancelTaskIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "cancel {request}"
+        ]
+      },
+      {
+        "name": "MoveIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "move {request}"
+        ]
+      },
+      {
+        "name": "AddIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "add {request}"
+        ]
+      },
+      {
+        "name": "RemoveIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "remove {request}"
+        ]
+      },
+      {
+        "name": "ListIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "list {request}"
+        ]
+      },
+      {
+        "name": "CompareIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "compare {request}"
+        ]
+      },
+      {
+        "name": "ResearchIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "research {request}"
+        ]
+      },
+      {
+        "name": "PlanIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "plan {request}"
+        ]
+      },
+      {
+        "name": "HelpMeIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "help me {request}"
+        ]
+      },
+      {
+        "name": "PleaseIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "please {request}"
+        ]
+      },
+      {
+        "name": "WhatIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "what {request}"
+        ]
+      },
+      {
+        "name": "WhenIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "when {request}"
+        ]
+      },
+      {
+        "name": "WhereIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "where {request}"
+        ]
+      },
+      {
+        "name": "WhoIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "who {request}"
+        ]
+      },
+      {
+        "name": "WhoseIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "whose {request}"
+        ]
+      },
+      {
+        "name": "WhichIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "which {request}"
+        ]
+      },
+      {
+        "name": "WhyIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "why {request}"
+        ]
+      },
+      {
+        "name": "HowIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "how {request}"
+        ]
+      },
+      {
+        "name": "IsIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "is {request}"
+        ]
+      },
+      {
+        "name": "AreIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "are {request}"
+        ]
+      },
+      {
+        "name": "AmIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "am {request}"
+        ]
+      },
+      {
+        "name": "WasIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "was {request}"
+        ]
+      },
+      {
+        "name": "WereIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "were {request}"
+        ]
+      },
+      {
+        "name": "DoIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "do {request}"
+        ]
+      },
+      {
+        "name": "DoesIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "does {request}"
+        ]
+      },
+      {
+        "name": "DidIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "did {request}"
+        ]
+      },
+      {
+        "name": "CanIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "can {request}"
+        ]
+      },
+      {
+        "name": "CouldIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "could {request}"
+        ]
+      },
+      {
+        "name": "WouldIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "would {request}"
+        ]
+      },
+      {
+        "name": "ShouldIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "should {request}"
+        ]
+      },
+      {
+        "name": "WillIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "will {request}"
+        ]
+      },
+      {
+        "name": "HaveIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "have {request}"
+        ]
+      },
+      {
+        "name": "HasIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "has {request}"
+        ]
+      },
+      {
+        "name": "GetIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "get {request}"
+        ]
+      },
+      {
+        "name": "ShowIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "show {request}"
+        ]
+      },
+      {
+        "name": "GiveIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "give {request}"
+        ]
+      },
+      {
+        "name": "ReadIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "read {request}"
+        ]
+      },
+      {
+        "name": "SearchIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "search {request}"
+        ]
+      },
+      {
+        "name": "AskIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "ask {request}"
+        ]
+      },
+      {
+        "name": "SetIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "set {request}"
+        ]
+      },
+      {
+        "name": "MakeIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "make {request}"
+        ]
+      },
+      {
+        "name": "PutIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "put {request}"
+        ]
+      },
+      {
+        "name": "OrganiseIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "organise {request}"
+        ]
+      },
+      {
+        "name": "ArrangeIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "arrange {request}"
+        ]
+      },
+      {
+        "name": "PrepareIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "prepare {request}"
+        ]
+      },
+      {
+        "name": "SuggestIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "suggest {request}"
+        ]
+      },
+      {
+        "name": "RecommendIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "recommend {request}"
+        ]
+      },
+      {
+        "name": "CalculateIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "calculate {request}"
+        ]
+      },
+      {
+        "name": "ConvertIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "convert {request}"
+        ]
+      },
+      {
+        "name": "TranslateIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "translate {request}"
+        ]
+      },
+      {
+        "name": "DescribeIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "describe {request}"
+        ]
+      },
+      {
+        "name": "DefineIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "define {request}"
+        ]
+      },
+      {
+        "name": "ReviewIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "review {request}"
+        ]
+      },
+      {
+        "name": "ChangeIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "change {request}"
+        ]
+      },
+      {
+        "name": "RescheduleIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "reschedule {request}"
+        ]
+      },
+      {
+        "name": "UpdateTaskIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "update {request}"
+        ]
+      },
+      {
+        "name": "NeedIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "i need {request}"
+        ]
+      },
+      {
+        "name": "WantIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "i want {request}"
+        ]
+      },
+      {
+        "name": "LikeIntent",
+        "slots": [
+          {
+            "name": "request",
+            "type": "AMAZON.SearchQuery"
+          }
+        ],
+        "samples": [
+          "i would like {request}"
+        ]
+      },
+      {
+        "name": "EchoNameIntent",
+        "slots": [
+          {
+            "name": "echoName",
+            "type": "EchoDeviceName"
+          }
+        ],
+        "samples": [
+          "{echoName}",
+          "this is {echoName}",
+          "it is {echoName}",
+          "no {echoName}",
+          "the {echoName}",
+          "I am in {echoName}"
+        ]
+      },
+      {
+        "name": "ProofIntent",
+        "samples": [
+          "run the connection test",
+          "test the connection"
+        ]
+      },
+      {
+        "name": "ResultIntent",
+        "samples": [
+          "give me my result",
+          "my result"
+        ]
+      },
+      {
+        "name": "AMAZON.YesIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.NoIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.CancelIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.StopIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.HelpIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.FallbackIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.PauseIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.ResumeIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.NextIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.PreviousIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.StartOverIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.RepeatIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.LoopOnIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.LoopOffIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.ShuffleOnIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.ShuffleOffIntent",
+        "samples": []
+      },
+      {
+        "name": "AMAZON.NavigateHomeIntent",
+        "samples": []
+      },
+      {
+        "name": "StatusIntent",
+        "samples": [
+          "check cloud status"
+        ]
+      },
+      {
+        "name": "RenewIntent",
+        "samples": [
+          "renew cloud authentication"
+        ]
+      },
+      {
+        "name": "SetupIntent",
+        "samples": [
+          "set up cloud authentication",
+          "repair cloud authentication"
+        ]
+      },
+      {
+        "name": "LinkEchoIntent",
+        "samples": [
+          "link this echo",
+          "relink this echo",
+          "change this echo",
+          "link this device"
+        ]
+      }
+    ],
+    "types": [
+      {
+        "name": "EchoDeviceName",
+        "values": [
+          {
+            "name": {
+              "value": "Office Echo",
+              "synonyms": [
+                "Office"
+              ]
+            }
+          },
+          {
+            "name": {
+              "value": "Bedroom Echo",
+              "synonyms": [
+                "Bedroom"
+              ]
+            }
+          },
+          {
+            "name": {
+              "value": "Kitchen Echo",
+              "synonyms": [
+                "Kitchen"
+              ]
+            }
+          },
+          {
+            "name": {
+              "value": "Living Room Echo",
+              "synonyms": [
+                "Living Room"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

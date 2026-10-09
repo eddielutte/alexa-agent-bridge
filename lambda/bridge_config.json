@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "skill_id": "amzn1.ask.skill.00000000-0000-0000-0000-000000000000",
+  "display_name": "Nova AI",
+  "country": "GB",
+  "locale": "en-GB",
+  "language": "en",
+  "test_device_name": "",
+  "agent_name": ""
+}

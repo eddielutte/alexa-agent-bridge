@@ -1,0 +1,9 @@
+alexa-agent-bridge
+Copyright 2026 the alexa-agent-bridge authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The Amazon sign-in, device registration and native-speech request formats used by
+lambda/retail.py and bridge/core.py follow the protocol implemented by
+aioamazondevices (https://github.com/chemelli74/aioamazondevices), version 16.3.1,
+which is licensed under the Apache License, Version 2.0. With thanks to its authors.

@@ -1,0 +1,27 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        include:
+          - python: "3.8"
+            os: ubuntu-22.04
+          - python: "3.13"
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests (network-free)
+        run: python -B -m unittest discover -s tests -v
+      - name: Hosted-runtime grammar (Python 3.8)
+        run: python -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8'), str(p), feature_version=(3,8)) for p in pathlib.Path('lambda').glob('*.py')]"
+      - name: Secret check
+        run: python tools/check_secrets.py

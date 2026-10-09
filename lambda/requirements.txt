@@ -1,0 +1,1 @@
+# Runtime provides boto3 (observed 1.34.145). No retail library is deployed.
