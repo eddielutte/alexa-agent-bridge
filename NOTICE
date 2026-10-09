@@ -7,3 +7,6 @@ The Amazon sign-in, device registration and native-speech request formats used b
 lambda/retail.py and bridge/core.py follow the protocol implemented by
 aioamazondevices (https://github.com/chemelli74/aioamazondevices), version 16.3.1,
 which is licensed under the Apache License, Version 2.0. With thanks to its authors.
+
+tests/data/wycheproof_ed25519_test.json is from Project Wycheproof
+(https://github.com/C2SP/wycheproof), licensed under the Apache License, Version 2.0.

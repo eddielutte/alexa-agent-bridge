@@ -36,7 +36,7 @@ Releases are tags signed with the maintainer's SSH signing key:
 
 - Key fingerprint: `SHA256:jFE7AQS44EuMt6TVafQICt2UtpwoO9iQCFSQQ0q/j9k` (ED25519)
 - The public key is in [`allowed_signers`](allowed_signers) and is listed as a signing key on the maintainer's GitHub account (https://api.github.com/users/eddielutte/ssh_signing_keys).
-- To verify a release yourself, from a checkout: `python3 -m bridge verify --tag vX.Y.Z`. It's built in, so you don't need `ssh-keygen`. With `ssh-keygen` installed you can also run `git -c gpg.ssh.allowedSignersFile=allowed_signers verify-tag vX.Y.Z`.
+- To verify a release yourself, from a checkout: `python3 -m bridge verify --tag vX.Y.Z`. It's built in, so you don't need `ssh-keygen`. Where `ssh-keygen` is installed, it also runs `git verify-tag`, and both checks must agree. See [SECURITY.md](SECURITY.md#release-signing-what-it-protects) for what signing protects.
 
 The setup guide has agents verify the tag after cloning. `bridge update` verifies each new tag with its built-in check, against the `allowed_signers` file of the release already installed, so a changed key can't vouch for itself, and it refuses unsigned or wrongly signed tags.
 

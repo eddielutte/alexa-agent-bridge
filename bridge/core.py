@@ -133,7 +133,9 @@ def need(state, *keys):
 # --- ASK CLI -----------------------------------------------------------------------------------
 
 def run(args, **kwargs):
-    return subprocess.run(args, capture_output=True, text=True, **kwargs)
+    if args and args[0] == "git":  # never let planted replace refs change what a verified commit means
+        kwargs.setdefault("env", dict(os.environ, GIT_NO_REPLACE_OBJECTS="1"))
+    return subprocess.run(args, capture_output=True, **{"text": True, **kwargs})
 
 
 class Ask:
@@ -692,40 +694,160 @@ def status(state):
                     if p not in state.get("phases", {})), None))
 
 
-def verify_release(tag, runner=run, signers=None):
-    """Check a release tag's SSH signature in-process (no ssh-keygen needed) against allowed_signers."""
-    signers = signers or SIGNERS
-    result = runner(["git", "-C", str(ROOT), "cat-file", "tag", tag], encoding="utf-8")
-    commit = runner(["git", "-C", str(ROOT), "rev-parse", tag + "^{commit}"], encoding="utf-8")
+RELEASE_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
+GIT_TIMEOUT, FETCH_TIMEOUT = 60, 300
+
+
+def release_version(tag):
+    match = RELEASE_TAG.fullmatch(tag or "")
+    if not match:
+        raise Stop("release_name_invalid", "Release tags look like v1.2.3; '%s' doesn't." % tag)
+    return tuple(int(n) for n in match.groups())
+
+
+def _git(runner, *args, timeout=GIT_TIMEOUT, **kwargs):
     try:
+        return runner(["git", "-C", str(ROOT), *args], timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired:
+        raise sshsig.BadSignature("git_timeout") from None
+
+
+def verify_release(tag, runner=run, signers=None):
+    """Check a release tag's SSH signature in-process (no ssh-keygen needed) against allowed_signers.
+    The signed tag must name this tag and point at the commit it resolves to. Returns that commit."""
+    release_version(tag)
+    signers = signers or SIGNERS
+    ref = "refs/tags/" + tag
+    try:
+        size = _git(runner, "cat-file", "-s", ref)
+        if size.returncode != 0 or not str(size.stdout).strip().isdigit():
+            raise sshsig.BadSignature("not_a_tag")
+        if int(str(size.stdout).strip()) > sshsig.MAX_TAG_BYTES:
+            raise sshsig.BadSignature("too_large")  # checked before reading the object itself
+        result = _git(runner, "cat-file", "tag", ref, text=False)
+        commit = _git(runner, "rev-parse", "--verify", ref + "^{commit}")
         if result.returncode != 0 or commit.returncode != 0:
             raise sshsig.BadSignature("not_a_tag")
-        keys = [sshsig.public_key_blob(line) for line in Path(signers).read_text(encoding="utf-8").splitlines()
-                if line.strip() and not line.startswith("#")]
-        payload, armoured = sshsig.split_signed_tag(result.stdout.encode("utf-8"))
+        raw = result.stdout if isinstance(result.stdout, bytes) else result.stdout.encode("utf-8")
+        keys = sshsig.allowed_keys(Path(signers).read_text(encoding="utf-8"))
+        payload, armoured = sshsig.split_signed_tag(raw)
         signer = sshsig.verify(payload, armoured, keys)
+        sha = commit.stdout.strip()
+        header = sshsig.tag_header(payload)
+        if (header.get("object"), header.get("type"), header.get("tag")) != (sha, "commit", tag):
+            raise sshsig.BadSignature("tag_mismatch")  # e.g. an older signed release re-published under a new name
+        checks = ["built-in"]
+        if shutil.which("ssh-keygen"):  # an independent second opinion where available; both must agree
+            second = _git(runner, "-c", "gpg.ssh.allowedSignersFile=" + Path(signers).as_posix(),
+                          "-c", "gpg.minTrustLevel=fully", "verify-tag", ref)
+            if second.returncode != 0:
+                raise sshsig.BadSignature("ssh_keygen_disagrees")
+            checks.append("ssh-keygen")
     except (sshsig.BadSignature, OSError, ValueError) as error:
         raise Stop("release_unverified", "Release %s is not signed by a key in allowed_signers (%s). Don't run anything "
                    "from it; tell the owner." % (tag, error)) from None
-    emit("release_verified", tag=tag, signer=signer, commit=commit.stdout.strip())
-    return signer
+    emit("release_verified", tag=tag, signer=signer, commit=sha, checks=checks)
+    return sha
 
 
-def update(state, tag, allow_unsigned=False, runner=run, sleep=time.sleep):
-    repo = ROOT  # git finds the enclosing repository from here
-    if runner(["git", "-C", str(repo), "fetch", "--tags", "-q"]).returncode != 0:
-        raise Stop("update_refused", "Release %s could not be fetched. Nothing was deployed." % tag)
-    if not allow_unsigned:
-        # Checked with the signers file of the release already installed, before the new one is checked out.
+def _checkout_matches(sha, runner):
+    """The working tree is exactly the verified commit: HEAD matches and no tracked file is changed."""
+    head = _git(runner, "rev-parse", "--verify", "HEAD")
+    changed = _git(runner, "status", "--porcelain", "--untracked-files=no")
+    return (head.returncode == 0 and head.stdout.strip() == sha
+            and changed.returncode == 0 and not changed.stdout.strip())
+
+
+def verify_install(state, tag, runner=run):
+    """`bridge verify`: check the tag, check that this checkout IS that release, and record it as installed."""
+    try:
+        sha = verify_release(tag, runner)
+        matches = _checkout_matches(sha, runner)
+    except sshsig.BadSignature as error:
+        raise Stop("release_unverified", "Release %s couldn't be checked (%s). Tell the owner." % (tag, error)) from None
+    if not matches:
+        raise Stop("release_not_checked_out", "This checkout isn't release %s exactly. Run "
+                   "`git checkout -q --detach refs/tags/%s`, then verify again. Don't run anything else from it." % (tag, tag))
+    state["release"] = {"tag": tag, "commit": sha}
+    save_state(state)
+    emit("release_installed", tag=tag, commit=sha)
+
+
+def _installed_release(state, runner):
+    """The verified release that is installed now. Fails closed if it can't be established."""
+    recorded = state.get("release") or {}
+    if recorded.get("tag") and recorded.get("commit"):
+        if not _checkout_matches(recorded["commit"], runner):
+            raise Stop("release_baseline_unknown", "This checkout no longer matches the recorded release %s. Tell the "
+                       "owner; nothing was deployed." % recorded["tag"])
+        return recorded["tag"]
+    # Older installs have no record: the tag on HEAD must itself be a verified release that matches HEAD.
+    described = _git(runner, "describe", "--tags", "--exact-match", "--match", "v*", "HEAD")
+    tag = described.stdout.strip() if described.returncode == 0 else ""
+    if not RELEASE_TAG.fullmatch(tag):
+        raise Stop("release_baseline_unknown", "The installed release can't be identified. Run `python3 -m bridge verify "
+                   "--tag <installed tag>` first; nothing was deployed.")
+    try:
+        sha = verify_release(tag, runner)
+    except Stop:
+        raise Stop("release_baseline_unknown", "The installed release %s doesn't verify. Tell the owner; nothing was "
+                   "deployed." % tag) from None
+    if not _checkout_matches(sha, runner):
+        raise Stop("release_baseline_unknown", "This checkout isn't release %s exactly. Tell the owner; nothing was "
+                   "deployed." % tag)
+    state["release"] = {"tag": tag, "commit": sha}
+    save_state(state)
+    return tag
+
+
+def _fresh_deploy():
+    """Deploy with the newly checked-out code in a new process, never with code loaded from the old release."""
+    return subprocess.run([sys.executable, "-B", "-m", "bridge", "deploy"], cwd=str(ROOT)).returncode
+
+
+def update(state, tag, runner=run, deployer=_fresh_deploy):
+    wanted = release_version(tag)
+    lock = home() / "update.lock"
+    home().mkdir(parents=True, exist_ok=True)
+    try:
+        handle = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise Stop("update_in_progress", "Another update is running. If none is, delete %s and try again." % lock) from None
+    try:
+        os.close(handle)
         try:
-            verify_release(tag, runner)
+            current = _installed_release(state, runner)
+            if wanted <= release_version(current):
+                raise Stop("update_refused", "Release %s isn't newer than the installed %s. Nothing was deployed."
+                           % (tag, current))
+            # Fetch only this tag, replacing any local copy; whatever arrives must still verify below.
+            _git(runner, "fetch", "-q", "--no-tags", "origin", "+refs/tags/%s:refs/tags/%s" % (tag, tag),
+                 timeout=FETCH_TIMEOUT)
+        except sshsig.BadSignature:
+            raise Stop("update_refused", "Release %s couldn't be fetched in time. Nothing was deployed." % tag) from None
+        try:
+            # Checked with the signers file of the release already installed, before the new one is checked out.
+            sha = verify_release(tag, runner)
         except Stop:
             raise Stop("update_refused", "Release %s is not signed by a key in the installed allowed_signers. "
                        "Nothing was deployed." % tag) from None
-    if runner(["git", "-C", str(repo), "checkout", "-q", tag]).returncode != 0:
-        raise Stop("update_refused", "Release %s could not be checked out. Nothing was deployed." % tag)
-    emit("release_checked_out", tag=tag)
-    deploy(state, runner, sleep)
+        try:
+            checked_out = _git(runner, "checkout", "-q", "--detach", sha)
+        except sshsig.BadSignature:
+            checked_out = None
+        if not checked_out or checked_out.returncode != 0:
+            raise Stop("update_refused", "Release %s could not be checked out. Nothing was deployed." % tag)
+        state["release"] = {"tag": tag, "commit": sha}
+        save_state(state)
+        emit("release_checked_out", tag=tag, commit=sha)
+    finally:
+        lock.unlink()
+    code = deployer()
+    if code == 2:
+        raise Stop("deploy_stopped", "Release %s is checked out, but deploy stopped (see above). Run `python3 -m bridge "
+                   "deploy` again once that's resolved." % tag)
+    if code != 0:
+        raise Failed("deploy_failed")
 
 
 def uninstall(state, confirm, runner=run):

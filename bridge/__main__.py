@@ -47,7 +47,6 @@ def main(argv=None):
     ver.add_argument("--tag", required=True)
     up = sub.add_parser("update", help="deploy a newer signed release")
     up.add_argument("--tag", required=True)
-    up.add_argument("--allow-unsigned", action="store_true")
     rm = sub.add_parser("uninstall", help="delete the skill and local state")
     rm.add_argument("--yes", action="store_true")
     args = parser.parse_args(argv)
@@ -86,9 +85,9 @@ def main(argv=None):
         elif args.command == "status":
             core.status(state)
         elif args.command == "verify":
-            core.verify_release(args.tag)
+            core.verify_install(state, args.tag)
         elif args.command == "update":
-            core.update(state, args.tag, args.allow_unsigned)
+            core.update(state, args.tag)
         elif args.command == "uninstall":
             core.uninstall(state, args.yes)
     except core.Stop as stop:

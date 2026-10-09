@@ -26,8 +26,8 @@ The owner hears this when Amazon has withdrawn the skill's sign-in. Their Echo l
 
 ## “Update the bridge”
 
-1. Find the newest release tag: run `git fetch --tags` and `git tag -l 'v*' --sort=-v:refname` in the checkout, and confirm the tag with the owner.
-2. Run `python3 -m bridge update --tag <tag>`. It refuses unsigned or unknown releases and keeps the owner's links and sign-in.
+1. Find the newest release tag without downloading any tags: `git ls-remote --tags --refs origin 'v*'` in the checkout, and confirm the tag with the owner.
+2. Run `python3 -m bridge update --tag <tag>`. It refuses unsigned or unknown releases, anything not newer than the installed release, and a checkout with local changes. It keeps the owner's links and sign-in.
 3. Ask the owner to try one short question afterwards.
 
 ## “Remove the bridge”

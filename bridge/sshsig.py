@@ -100,30 +100,99 @@ def fingerprint(blob):
     return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
 
 
+MAX_TAG_BYTES = 1000000
+KEY_TYPES = ("ssh-", "ecdsa-", "sk-")
+
+
+def _exact_strings(data, count):
+    """SSH strings that must use the whole buffer: trailing bytes are refused."""
+    out, rest = _strings(data, count)
+    if rest:
+        raise BadSignature("trailing_data")
+    return out
+
+
+def _prime_order(raw_key):
+    """A usable Ed25519 public key: a valid point, not the identity and of prime order L."""
+    try:
+        point = _decode_point(raw_key)
+    except BadSignature:
+        return False
+    def identity(p):
+        return p[0] % P == 0 and (p[1] - p[2]) % P == 0
+    return not identity(point) and identity(_mul(Q, point))
+
+
+def allowed_keys(text):
+    """Keys from an allowed_signers file. Fails closed on anything this checker can't honour exactly:
+    options other than namespaces="git", negated principals, other key types and degenerate keys.
+    A revocation file isn't supported; revoke a key by removing it in a signed release."""
+    keys = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if "!" in fields[0]:
+            raise BadSignature("unsupported_principal")
+        at = 1 if len(fields) > 1 and fields[1].startswith(KEY_TYPES) else 2
+        if at == 2 and (len(fields) < 3 or fields[1] != 'namespaces="git"'):
+            raise BadSignature("unsupported_signers_option")
+        if len(fields) <= at + 1 or fields[at] != "ssh-ed25519":
+            raise BadSignature("unsupported_key")
+        blob = base64.b64decode(fields[at + 1], validate=True)
+        kind, raw_key = _exact_strings(blob, 2)
+        if kind != b"ssh-ed25519" or len(raw_key) != 32:
+            raise BadSignature("unsupported_key")
+        if not _prime_order(raw_key):
+            raise BadSignature("degenerate_key")
+        keys.append(blob)
+    return keys
+
+
+def tag_header(payload):
+    """The header fields of a git tag object (object, type, tag, tagger): lines up to the first blank line."""
+    header = {}
+    for line in payload.decode("utf-8").split("\n"):
+        if not line:
+            break
+        key, _, value = line.partition(" ")
+        header.setdefault(key, value)
+    return header
+
+
 def split_signed_tag(raw):
-    """Split a `git cat-file tag` object into (signed payload, armoured signature)."""
+    """Split a `git cat-file tag` object into (signed payload, armoured signature).
+    Exactly one signature block, starting on its own line and ending the object (one final newline allowed)."""
+    if len(raw) > MAX_TAG_BYTES:
+        raise BadSignature("too_large")
     text = raw.decode("utf-8")
-    start = text.rfind(BEGIN)
-    if start < 0 or END not in text[start:]:
-        raise BadSignature("unsigned")
-    return text[:start].encode("utf-8"), text[start:text.index(END, start) + len(END)]
+    if text.count(BEGIN) != 1 or text.count(END) != 1:
+        raise BadSignature("unsigned" if BEGIN not in text else "multiple_signatures")
+    start = text.index(BEGIN)
+    end = text.index(END) + len(END)
+    if end < start or (start and text[start - 1] != "\n") or text[end:] not in ("", "\n"):
+        raise BadSignature("malformed_armour")
+    return text[:start].encode("utf-8"), text[start:end]
 
 
 def verify(payload, armoured, allowed_blobs, namespace="git"):
     """Check an SSHSIG over payload. Returns the signer's key fingerprint, or raises BadSignature."""
-    body = "".join(line.strip() for line in armoured.strip().splitlines()[1:-1])
-    blob = base64.b64decode(body)
+    lines = armoured.strip().split("\n")
+    if len(lines) < 3 or lines[0] != BEGIN or lines[-1] != END:
+        raise BadSignature("malformed_armour")
+    blob = base64.b64decode("".join(line.strip() for line in lines[1:-1]), validate=True)
     if blob[:6] != b"SSHSIG" or int.from_bytes(blob[6:10], "big") != 1:
         raise BadSignature("not_sshsig")
-    (key, space, reserved, algorithm, sig), _ = _strings(blob[10:], 5)
+    key, space, reserved, algorithm, sig = _exact_strings(blob[10:], 5)
     if key not in allowed_blobs:
         raise BadSignature("unknown_key")
     if space.decode() != namespace:
         raise BadSignature("wrong_namespace")
     if algorithm not in (b"sha512", b"sha256"):
         raise BadSignature("unsupported_hash")
-    (kind, raw_key), _ = _strings(key, 2)
-    (sig_kind, raw_sig), _ = _strings(sig, 2)
+    kind, raw_key = _exact_strings(key, 2)
+    sig_kind, raw_sig = _exact_strings(sig, 2)
     if kind != b"ssh-ed25519" or sig_kind != b"ssh-ed25519":
         raise BadSignature("unsupported_key")
     digest = hashlib.new(algorithm.decode(), payload).digest()

@@ -33,8 +33,9 @@ Below, `<work>` is your working folder: `~/alexa-bridge` unless your profile's *
 
 ### 1. Start
 
-1. Clone the repository at the release tag the owner gave you, or the latest signed release, so that `<work>` is the repository root: `git clone --branch <tag> <repository URL> <work>`. The setup tool records this location in `~/.alexa-bridge/state.json` for the maintenance skill.
-   Then check the release signature from inside `<work>`: `python3 -m bridge verify --tag <tag>`. It needs no extra tools. It must report `release_verified` with signer `SHA256:jFE7AQS44EuMt6TVafQICt2UtpwoO9iQCFSQQ0q/j9k`, the fingerprint published in the README and on the maintainer's GitHub account (https://api.github.com/users/eddielutte/ssh_signing_keys). If it stops, or reports a different signer, stop and tell the owner; don't run anything else from that checkout. Where `ssh-keygen` is installed, `git -c gpg.ssh.allowedSignersFile=allowed_signers verify-tag <tag>` gives a second, independent check.
+1. Clone the release tag the owner gave you, or the latest signed release, so that `<work>` is the repository root. Check out the tag itself, never a branch with the same name:
+   `git clone --no-checkout <repository URL> <work>`, then `git -C <work> checkout -q --detach refs/tags/<tag>`.
+   Then, from inside `<work>`, run `python3 -m bridge verify --tag <tag>`. It needs no extra tools. It must report `release_verified` with signer `SHA256:jFE7AQS44EuMt6TVafQICt2UtpwoO9iQCFSQQ0q/j9k` (the fingerprint published in the README and on the maintainer's GitHub account, https://api.github.com/users/eddielutte/ssh_signing_keys), then `release_installed`. That confirms this checkout is exactly that signed release and records it for later updates. If it stops, or reports a different signer, stop and tell the owner; don't run anything else from that checkout. Where `ssh-keygen` is installed, it runs `git verify-tag` as well and both must agree. The setup tool also records the checkout's location in `~/.alexa-bridge/state.json` for the maintenance skill.
 2. Run `python3 -m bridge preflight`. It checks Python, Node, npm, git and the network, and installs ASK CLI 2.30.7 with `npm install -g`. That needs no root if npm's prefix is a folder you can write to, such as `npm config set prefix ~/.local`, with its `bin` folder on your `PATH`.
 3. Tell the owner, in your own words:
    - what they'll get
@@ -117,8 +118,13 @@ Usually the routine runs on you. If the owner's answers will come from a differe
 | `choose_test_echo` | No test Echo has been chosen | Repeat step 5.3 |
 | `renewal_failed` | Enrolment was sent, but the cloud couldn't renew the sign-in yet | Wait a minute, then run `python3 -m bridge test --status`. Once it no longer reports a sign-in problem, continue at step 5.5 |
 | `setup_card_unavailable` (exit code 1) | The simulator didn't return the skill's setup card | Run `enrol` again once. If it fails again, report it to the owner |
-| `release_unverified` | The tag isn't signed, or not by a key in `allowed_signers` | Don't run anything from that checkout. Tell the owner |
-| `update_refused` | The release couldn't be fetched, or its signature couldn't be verified | Nothing was deployed. Check the tag name with the owner |
+| `release_unverified` | The tag isn't signed, isn't signed by a key in `allowed_signers`, or its signed name or commit doesn't match | Don't run anything from that checkout. Tell the owner |
+| `release_name_invalid` | The tag isn't shaped like `v1.2.3` | Use a release tag from the Releases page |
+| `release_not_checked_out` | The checkout isn't exactly the verified release (another commit, or changed files) | Check out `refs/tags/<tag>` detached, then verify again. Don't run anything else from it |
+| `release_baseline_unknown` | The installed release can't be confirmed, so an update can't tell what's newer | Run `python3 -m bridge verify --tag <installed tag>`; if that fails, tell the owner |
+| `update_in_progress` | Another update holds the lock | Wait for it. If none is running, delete the lock file named in the message |
+| `deploy_stopped` | The new release is checked out, but its deploy stopped | Resolve the stop shown above it, then run `python3 -m bridge deploy` |
+| `update_refused` | The release couldn't be verified, isn't newer than the installed one, or the checkout has local changes | Nothing was deployed. Check the tag name with the owner, and report any local changes rather than discarding them |
 | `confirm_uninstall` | Removal needs confirmation | Confirm with the owner, then add `--yes` |
 | `pack_unreadable` | A drafted language pack file is missing or isn't valid JSON | Fix the file named in the message |
 | `earlier_step_missing` | A step was skipped | Run `python3 -m bridge status` and follow `next` |
