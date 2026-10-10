@@ -36,11 +36,14 @@ The skill sends each request to one webhook. The routine must:
 
 The setup agent follows [the setup guide](SETUP.md). It must have:
 
-1. **A Linux or macOS shell it can run commands in.** On Windows, use WSL (untested). ASK CLI's developer sign-in (`ask configure`) asks questions in the terminal. If the agent's shell can't answer them, the owner runs that one command in a terminal on the agent's computer.
-   - Python 3.9 or later, Node.js with npm, and git. `bridge preflight` checks these and installs ASK CLI 2.30.7 without root. Release signatures are checked by the bridge itself, so `ssh-keygen` isn't needed.
+1. **A Linux or macOS shell it can run commands in.** On Windows, use WSL (untested).
+   - Python 3.9 or later, Node.js with npm, and git. No root: `bridge setup` installs its own ASK CLI 2.30.7 under `~/.alexa-bridge/tools`. Release signatures are checked by the bridge itself, so `ssh-keygen` isn't needed.
    - Outbound HTTPS to Amazon's sites.
-   - Files that stay put between steps. Setup state lives in `~/.alexa-bridge`. Everything resumes after a reset; `preflight` reinstalls what's missing.
-2. **A web browser on the same computer, which it can hand to the owner.** Amazon's developer sign-in returns to a local address (`127.0.0.1`), so a browser elsewhere won't work. The owner signs in to Amazon, enters 2-step codes and solves any CAPTCHA themselves; the agent takes control back afterwards. The agent then reads the final sign-in address from its own address bar into a private file without displaying it. If it can't, the owner copies the address and the agent runs `signin finish --from-clipboard`, or `--from-prompt` for a hidden prompt where there's no desktop clipboard.
+   - Files that stay put between steps. Setup state lives in `~/.alexa-bridge`, and `bridge setup` carries on from it after a cut-off command or a restart. A reset that removes packages or the ASK CLI sign-in is also recovered: `setup` reinstalls ASK CLI and asks for the developer sign-in again.
+   - The developer sign-in (`ask configure`) asks two questions in a terminal. On Linux and macOS the bridge answers them itself in a pseudo-terminal. Elsewhere, the owner runs that one command in a terminal on the agent's computer.
+2. **A web browser on the same computer, which it can hand to the owner.** Amazon's developer sign-in returns to a local address (`127.0.0.1`), so a browser elsewhere won't work. The owner signs in to Amazon, enters 2-step codes and solves any CAPTCHA themselves; the agent takes control back afterwards.
+   - The agent then moves the final sign-in address to the clipboard without displaying it, and the bridge reads it there. It uses tkinter, `xclip`, `xsel`, `wl-paste`, `pbpaste`, or X11 directly, on the browser's own display.
+   - Without a clipboard, the agent can save the address to a private file (`signin finish --from-file`), or the owner can paste it into a hidden prompt (`--from-prompt`).
 3. **A secure store for secrets (recommended).** The routine's webhook URL and key reach setup as the environment variables `BRIDGE_WEBHOOK_URL` and `BRIDGE_WEBHOOK_KEY`, ideally from a store whose values the agent can use but never sees.
    - **Fallback:** the owner types both values into hidden prompts with `python3 -m bridge webhook-set`. This needs the owner to have a terminal on the agent's computer.
 4. **A way to save reusable instructions,** such as a saved skill or task, so the owner can later ask for “Alexa bridge maintenance” using [MAINTENANCE.md](MAINTENANCE.md).

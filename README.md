@@ -2,13 +2,18 @@
 
 Ask your AI agent questions through your Amazon Echo. You say “Alexa, ask Nova AI, please…”, Alexa replies “Okay, one moment.”, your agent does the work, and the answer is spoken on the Echo you asked from. “Nova AI” stands for whatever name your agent suggests.
 
-You don't install anything. Give your agent this repository's link, at a release tag:
+You don't install anything. Send your agent this message:
 
-> Set up the Alexa bridge from https://github.com/eddielutte/alexa-agent-bridge, release &lt;tag&gt;.
+> Set up the Alexa bridge from https://github.com/eddielutte/alexa-agent-bridge.
 
-Use the newest tag from this repository's **Releases** page. Releases are signed, and your agent checks the signature before running anything (key fingerprint `SHA256:jFE7AQS44EuMt6TVafQICt2UtpwoO9iQCFSQQ0q/j9k`; see [CONTRIBUTING](CONTRIBUTING.md#releases)).
+Your agent uses the newest release. Releases are signed, and your agent checks the signature before running anything (key fingerprint `SHA256:jFE7AQS44EuMt6TVafQICt2UtpwoO9iQCFSQQ0q/j9k`; see [CONTRIBUTING](CONTRIBUTING.md#releases)). To pin a particular release, add “, release v1.2.3” to the message.
 
-Your agent follows [SETUP.md](SETUP.md) on its own computer. It builds a **private** Alexa skill in **your own** Amazon developer account and connects it to a routine on your agent. You sign in when asked, choose a name and country, and listen for a test sentence.
+Your agent follows [SETUP.md](SETUP.md) on its own computer. It builds a **private** Alexa skill in **your own** Amazon developer account and connects it to a routine on your agent. Your part takes about 10 minutes, all at the start:
+- answer three questions (name, country and Amazon account)
+- sign in to Amazon twice on pages your agent opens
+- copy two connection codes into your agent's secure boxes
+
+Later, you listen for one test sentence. Your first question on each Echo also links that Echo.
 
 ## Agents
 
@@ -24,14 +29,14 @@ The bridge works with any AI agent that has the [capabilities it needs](AGENT-RE
 | Grokbot | **Tested** end to end in the United Kingdom. See its [profile](agents/grokbot.md) |
 | Other agents | Untested. Check the [requirements](AGENT-REQUIREMENTS.md), follow the [profile guide](agents/README.md), and please [report how it went](CONTRIBUTING.md#agent-results) |
 
-Agents that load skills in the open [Agent Skills](https://agentskills.io) format can also start from the [setup skill](skills/README.md); it still needs this link and a release tag. That route is untested.
+Agents that load skills in the open [Agent Skills](https://agentskills.io) format can also start from the [setup skill](skills/README.md); it still needs this link. That route is untested.
 
 ## What you need
 
-- An agent that meets the [requirements](AGENT-REQUIREMENTS.md). Its computer needs Python 3.9+, Node with npm, and git; setup installs Amazon's ASK CLI itself.
+- An agent that meets the [requirements](AGENT-REQUIREMENTS.md). Its computer needs Python 3.9+, Node with npm, and git, and no admin rights; setup installs Amazon's ASK CLI itself.
 - An Amazon account with an Alexa developer profile. It's free: register at [developer.amazon.com](https://developer.amazon.com/).
 - Your Echos registered to **that same Amazon account**. A private (Development-stage) skill only works on devices signed in to the developer account.
-- About 30 minutes. The tested Grokbot setup took under 30 minutes, mostly waiting for Amazon.
+- About 30 minutes in all, but only about 10 of them need you, at the start.
 
 ## Before you start: important
 

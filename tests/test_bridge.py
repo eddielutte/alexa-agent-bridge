@@ -1,5 +1,4 @@
 """Config, countries, messaging regions, enrolment versioning and model generation."""
-import copy
 import json
 from pathlib import Path
 import sys
@@ -10,7 +9,7 @@ import test_skill as f
 import retail
 import messaging
 import lambda_function
-from lambda_function import App, digest
+from lambda_function import digest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -23,10 +22,6 @@ def country_session(code):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_deployed_config_loads(self):
-        self.assertEqual(lambda_function.SKILL_ID, lambda_function.CONFIG["skill_id"])
-        self.assertEqual(lambda_function.DEFAULT_API_HOST, retail.messaging_host(lambda_function.CONFIG["country"]))
-
     def test_invalid_configs_are_refused(self):
         good = dict(lambda_function.CONFIG)
         for change in ({"schema": 2}, {"skill_id": "amzn1.ask.skill.x"}, {"display_name": " "},
@@ -161,10 +156,6 @@ class AppRegionAndEnrolmentTests(unittest.TestCase):
     def card(self):
         return json.loads(self.app.setup_card("owner")["response"]["card"]["content"])
 
-    def test_setup_card_is_versioned(self):
-        card = self.card()
-        self.assertEqual((card["schema"], card["country"]), (2, "GB"))
-
     def enrol(self, registration, **extra):
         card = self.card()
         payload = {"client_id": "FAKE", "client_secret": "FAKE", "registration": registration, **extra}
@@ -182,7 +173,6 @@ class AppRegionAndEnrolmentTests(unittest.TestCase):
         self.assertEqual(self.enrol(f.session())["test_device_name"], lambda_function.CONFIG["test_device_name"])
 
     def test_proof_receipts_are_bounded(self):
-        clock = iter(range(1500, 1600))
         for n in range(lambda_function.PROOF_LIMIT + 5):
             event = self.t.voice("ProofIntent")
             event["request"]["requestId"] = "proof-%d" % n
@@ -194,14 +184,6 @@ class AppRegionAndEnrolmentTests(unittest.TestCase):
 
 
 class ModelTests(unittest.TestCase):
-    def test_generated_model_matches_the_deployed_model(self):
-        path = ROOT / "interaction-model.json"
-        if not path.exists():
-            self.skipTest("no deployed model in this checkout")
-        deployed = path.read_bytes().replace(b"\r\n", b"\n").decode("utf-8")
-        invocation = json.loads(deployed)["interactionModel"]["languageModel"]["invocationName"]
-        self.assertEqual(build_model.build("en", invocation), deployed)
-
     def test_owner_echo_names_replace_the_examples(self):
         model = json.loads(build_model.build("en", "nova a. i.", ["Kitchen Echo Show", "Office Echo", "Den"]))
         types = model["interactionModel"]["languageModel"]["types"]

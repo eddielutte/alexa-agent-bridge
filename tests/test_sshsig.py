@@ -31,16 +31,9 @@ TAG = PAYLOAD.decode() + SIGNATURE
 
 
 class Ed25519Tests(unittest.TestCase):
-    def test_rfc8032_vector_and_tampering(self):
-        public = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
-        signature = bytes.fromhex("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33"
-                                  "bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
-        self.assertTrue(sshsig.ed25519_verify(public, b"", signature))
-        self.assertFalse(sshsig.ed25519_verify(public, b"x", signature))
-        self.assertFalse(sshsig.ed25519_verify(public, b"", signature[:63] + b"\x00"))
-
     def test_wycheproof_vectors(self):
-        """Google's Wycheproof Ed25519 vectors (Apache-2.0): every valid case passes, every invalid case fails."""
+        """Google's Wycheproof Ed25519 vectors (Apache-2.0), which include RFC 8032's: every valid case passes,
+        every invalid case fails."""
         data = json.loads((Path(__file__).parent / "data" / "wycheproof_ed25519_test.json").read_text(encoding="utf-8"))
         seen = 0
         for group in data["testGroups"]:
@@ -55,6 +48,14 @@ class Ed25519Tests(unittest.TestCase):
 
 class SshsigTests(unittest.TestCase):
     key = sshsig.public_key_blob(FIXTURE_KEY)
+
+    def test_shipped_release_key_matches_the_published_fingerprint(self):
+        keys = sshsig.allowed_keys(core.SIGNERS.read_text(encoding="utf-8"))
+        self.assertEqual(len(keys), 1)
+        published = sshsig.fingerprint(keys[0])
+        for doc in ("SETUP.md", "README.md", "CONTRIBUTING.md"):  # public/ in this repository, the root once exported
+            path = core.ROOT / "public" / doc if (core.ROOT / "public" / doc).exists() else core.ROOT / doc
+            self.assertIn(published, path.read_text(encoding="utf-8"), doc)
 
     def test_ssh_keygen_signature_verifies_with_the_same_fingerprint(self):
         payload, armoured = sshsig.split_signed_tag(TAG.encode())
@@ -98,7 +99,6 @@ class ContainerTests(unittest.TestCase):
         key = FIXTURE_KEY.split()[1]
         self.assertEqual(sshsig.allowed_keys('  # p ssh-ed25519 %s\np namespaces="git" ssh-ed25519 %s c\n' % (key, key)),
                          [self.key])
-        self.assertEqual(len(sshsig.allowed_keys((Path(core.ROOT) / "allowed_signers").read_text())), 1)
         def string(value):
             return len(value).to_bytes(4, "big") + value
         identity = base64.b64encode(string(b"ssh-ed25519") + string(b"\x01" + b"\x00" * 31)).decode()
@@ -287,8 +287,26 @@ class VerifyReleaseTests(unittest.TestCase):
     def test_a_stopped_or_failed_deploy_is_reported(self):
         self.stop("deploy_stopped", core.update, self.state(), "v9.9.9", runner=self.runner(head=self.OLD),
                   deployer=self.deployer(2))
+        saved = json.loads((Path(self.tmp.name) / "state.json").read_text())
+        self.assertEqual((saved["release"]["tag"], saved["deploy_pending"]), ("v9.9.9", "v9.9.9"))
         with self.assertRaises(core.Failed):
             core.update(self.state(), "v9.9.9", runner=self.runner(head=self.OLD), deployer=self.deployer(1))
+
+    def test_latest_picks_the_newest_release_and_still_verifies_it(self):
+        listing = "".join("%s\trefs/tags/%s\n" % ("0" * 40, t) for t in ("v0.1.2", "v9.9.9", "v10.0.0-rc1", "main"))
+        def with_listing(inner):
+            def run(args, **kwargs):
+                if "ls-remote" in args:
+                    return SimpleNamespace(returncode=0, stdout=listing, stderr="")
+                return inner(args, **kwargs)
+            return run
+        self.assertEqual(core.latest_release(with_listing(self.runner())), "v9.9.9")
+        core.update(self.state(), runner=with_listing(self.runner(head=self.OLD)), deployer=self.deployer())
+        self.assertEqual(self.deploys, [0])
+        core.update(self.state("v9.9.9", self.COMMIT), runner=with_listing(self.runner()), deployer=self.deployer())
+        self.assertEqual((self.events()[-1]["event"], self.deploys), ("up_to_date", [0]))
+        self.stop("update_refused", core.update, self.state(), runner=with_listing(self.runner(signed=False, head=self.OLD)),
+                  deployer=self.deployer())
 
 
 if __name__ == "__main__":

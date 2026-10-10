@@ -206,13 +206,6 @@ class CliTests(unittest.TestCase):
         self.assertNotEqual(self.events()[-1]["next"], "enrol")
         self.assertNoSecrets()
 
-    def test_installed_signers_file_holds_the_release_key(self):
-        self.assertTrue(core.SIGNERS.read_text().startswith("alexa-agent-bridge-release namespaces=\"git\" ssh-ed25519 "))
-
-    def test_status_names_the_next_step(self):
-        core.status(self.chosen())
-        self.assertEqual(self.events()[-1]["next"], "preflight")
-
     def test_create_stops_for_first_time_captcha(self):
         with self.assertRaises(core.Stop) as stop:
             core.create(self.chosen(), FakeAsk(permission="NEW_USER_REGISTRATION_REQUIRED"), sleep=lambda s: None)
@@ -322,7 +315,7 @@ class CliTests(unittest.TestCase):
         for phase in ("preflight", "choose", "doctor", "dev_auth", "create", "deploy"):
             self.state["phases"].setdefault(phase, {})
         core.status(self.state)
-        self.assertEqual(self.events()[-1]["next"], "signin check")
+        self.assertEqual(self.events()[-1]["next"], "python3 -m bridge signin check")
         core.signin_check(self.state, self.transport, self.renewed)
         self.assertEqual(self.state["echoes"], ["Kitchen Echo", "Office Echo"])
         self.assertEqual(self.state["phases"]["signin"]["home_region"], "EU")
@@ -340,6 +333,204 @@ class CliTests(unittest.TestCase):
             core.signin_check(state, down, self.renewed)
         self.assertEqual(stop.exception.category, "signin_check_failed")
         self.assertEqual(core.read_private("seed.json")["customer_id"], "pending")
+
+    def test_an_unreadable_source_keeps_the_pending_sign_in(self):
+        core.signin_start(self.chosen())
+        empty = Path(self.tmp.name) / "empty.txt"
+        empty.write_text("https://www.amazon.com/ap/maplanding")
+        for source in (str(Path(self.tmp.name) / "missing.txt"), str(empty)):
+            with self.assertRaises(core.Stop) as stop:
+                core.signin_finish(self.state, source, transport=lambda *a, **k: self.fail("no Amazon call"))
+            self.assertEqual(stop.exception.category, "signin_incomplete")
+            self.assertIsNotNone(core.read_private("pkce.json"))
+        self.assertFalse(empty.exists())
+        with patch.object(core, "read_clipboard", side_effect=core.Stop("clipboard_unavailable", "x")):
+            with self.assertRaises(core.Stop) as stop:
+                core.signin_finish(self.state, "clipboard", transport=lambda *a, **k: self.fail("no Amazon call"))
+        self.assertEqual(stop.exception.category, "clipboard_unavailable")
+        self.assertIsNotNone(core.read_private("pkce.json"))
+
+    def test_clipboard_falls_back_to_command_line_tools(self):
+        calls = []
+        def runner(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="https://www.amazon.com/ap/maplanding?x=1\n", stderr="")
+        with patch.dict(sys.modules, {"tkinter": None}):
+            with patch("shutil.which", side_effect=lambda name: "/usr/bin/xsel" if name == "xsel" else None):
+                self.assertEqual(core.read_clipboard(runner).strip(), "https://www.amazon.com/ap/maplanding?x=1")
+            self.assertEqual(calls, [["xsel", "--clipboard", "--output"], ["xsel", "--clipboard", "--clear"]])
+            with patch("shutil.which", return_value=None):
+                with self.assertRaises(core.Stop) as stop:
+                    core.read_clipboard(runner)
+        self.assertEqual(stop.exception.category, "clipboard_unavailable")
+
+    def test_doctor_network_times_the_sign_in_endpoint(self):
+        self.chosen()
+        fetch = lambda url: 302 if "alexa.amazon" in url else 404
+        core.doctor(self.state, fetch=fetch, network=True, timer=lambda: [180, 210, 190])
+        network = next(e for e in self.events() if e["event"] == "network")
+        self.assertEqual((network["timings_ms"], network["slow"], network["next"]), ([180, 210, 190], False, None))
+        core.doctor(self.state, fetch=fetch, network=True, timer=lambda: [180, None, 9000])
+        self.assertTrue([e for e in self.events() if e["event"] == "network"][-1]["slow"])
+        def refused(method, url, headers, data, timeout):
+            self.assertEqual((url, timeout), ("https://api.amazon.com/auth/token", core.SETUP_TIMEOUT))
+            return 400, [], b"{}"
+        clock = iter([0.0, 0.25, 1.0, 1.5]).__next__
+        self.assertEqual(core.network_timings(refused, clock, tries=2), [250, 500])
+
+    def test_status_shows_the_release_and_an_unfinished_deploy(self):
+        self.state.update(release={"tag": "v0.1.4", "commit": "c" * 40}, deploy_pending="v0.1.4")
+        core.status(self.state)
+        event = self.events()[-1]
+        self.assertEqual((event["release"], event["deploy_pending"], event["next"]), ("v0.1.4", "v0.1.4", "python3 -m bridge deploy"))
+
+    def test_setup_asks_the_owner_everything_first_then_deploys_once(self):
+        ensured = patch.object(core, "ask_exe", return_value="ask")  # never a real npm install
+        ensured.start()
+        self.addCleanup(ensured.stop)
+        with self.assertRaises(core.Stop) as stop:
+            core.setup({"phases": {"preflight": {}}})
+        self.assertEqual((stop.exception.category, stop.exception.do),
+                         ("choose_needed", 'python3 -m bridge choose --name "<name>" --country <code> --agent "<agent name>"'))
+        self.assertIn("go-ahead", stop.exception.say)
+        state = self.chosen()
+        state["phases"].update(preflight={}, doctor={})
+        with self.assertRaises(core.Stop) as stop:
+            core.setup(state)
+        self.assertEqual(stop.exception.category, "signin_handover")
+        self.assertTrue(self.events()[-1]["url"].startswith("https://www.amazon.com/ap/signin?"))
+        self.assertEqual(core.next_step(state), "signin finish")
+        state["phases"]["signin"], state["echoes"] = {}, ["Office Echo"]
+        order = []
+        def step(name):
+            return lambda state, *a, **k: (order.append(name), core.done(state, name))
+        env = {"BRIDGE_WEBHOOK_URL": "https://example.test/hook", "BRIDGE_WEBHOOK_KEY": "FAKE-KEY"}
+        with patch.multiple(core, dev_auth=step("dev_auth"), deploy=step("deploy"), enrol=step("enrol")), \
+                patch.object(core, "create", step("create")), patch.dict(os.environ, env):
+            with self.assertRaises(core.Stop) as stop:
+                core.setup(state)
+        self.assertEqual(order, ["dev_auth", "create", "deploy", "enrol"])
+        self.assertEqual((state["choices"]["test_echo"], state["phases"]["webhook"]["domain"]), ("Office Echo", "example.test"))
+        self.assertEqual((stop.exception.category, stop.exception.do), ("ready_to_listen", "python3 -m bridge test"))
+        state["phases"]["test"] = {}
+        core.setup(state)
+        self.assertIn("Alexa, ask Nova AI, please tell me a short joke", self.events()[-1]["say"])
+        self.assertNoSecrets()
+
+    def test_the_test_echo_comes_from_the_signed_in_list(self):
+        state = self.chosen()
+        state["echoes"] = ["Kitchen Echo", "Office Echo"]
+        with self.assertRaises(core.Stop) as stop:
+            core.choose_test_echo(state)
+        self.assertIn("Kitchen Echo, Office Echo", stop.exception.say)
+        with self.assertRaises(core.Stop):
+            core.choose_test_echo(state, "Bedroom Echo")
+        core.choose_test_echo(state, " office echo ")
+        self.assertEqual((state["choices"]["test_echo"], core.next_step(state)), ("Office Echo", "preflight"))
+        from bridge.__main__ import main
+        self.assertEqual(main(["choose", "--test-echo", "Kitchen Echo"]), 0)
+        self.assertEqual(core.load_state()["choices"]["test_echo"], "Kitchen Echo")
+        self.assertEqual(main(["choose", "--test-echo", "Bedroom"]), 2)
+        self.assertEqual(self.events()[-1]["who"], "owner")
+
+    def test_changing_the_name_or_country_redoes_what_depends_on_it(self):
+        state = self.chosen()
+        state["phases"].update(doctor={}, signin={}, test_echo={}, create={})
+        core.choose(state, "nova a. i.", "gb")
+        self.assertIn("signin", state["phases"])
+        core.choose(state, "nova a. i.", "IE")
+        self.assertEqual(sorted(state["phases"]), ["choose", "create"])
+        state["phases"]["deploy"], state["skill_id"] = {}, SKILL
+        core.choose(state, "kitchen helper", "IE")
+        self.assertEqual(state["deploy_pending"], "name")
+        with self.assertRaises(core.Stop) as stop:
+            core.choose(state, "kitchen helper", "GB")
+        self.assertEqual(stop.exception.category, "country_locked")
+        self.assertEqual(state["choices"]["country"], "IE")
+
+    def test_an_account_without_echos_says_so_instead_of_looping(self):
+        state = self.chosen()
+        state["phases"]["signin"], state["echoes"] = {}, []
+        with self.assertRaises(core.Stop) as stop:
+            core.choose_test_echo(state)
+        self.assertEqual(stop.exception.category, "no_echoes")
+        self.assertIn("Alexa app", stop.exception.say)
+
+    def test_a_pending_sign_in_prints_the_same_page_again(self):
+        core.signin_start(self.chosen())
+        first = self.events()[-1]["url"]
+        with self.assertRaises(core.Stop) as stop:
+            core.signin_finish(self.state, "clipboard", clipboard=lambda: "", transport=lambda *a, **k: self.fail("no call"))
+        self.assertEqual((stop.exception.category, self.events()[-1]["url"]), ("signin_incomplete", first))
+
+    def test_only_a_clear_sign_in_error_counts_as_signed_out(self):
+        def answer(code, text):
+            return lambda args, **kwargs: SimpleNamespace(returncode=code, stdout="", stderr=text)
+        with patch.object(core, "ask_exe", return_value="ask"):
+            self.assertTrue(core.developer_signed_out("alexa-bridge", answer(1, "Error: invalid_grant")))
+            self.assertFalse(core.developer_signed_out("alexa-bridge", answer(1, "getaddrinfo ENOTFOUND api.amazonalexa.com")))
+            self.assertFalse(core.developer_signed_out("alexa-bridge", answer(0, "{}")))
+
+    def test_webhook_check_shows_only_host_and_length(self):
+        state = self.chosen()
+        with self.assertRaises(core.Stop) as stop:
+            core.webhook_check(state)
+        self.assertEqual(stop.exception.category, "webhook_missing")
+        self.assertIn("connection codes", stop.exception.say)
+        with patch.dict(os.environ, {"BRIDGE_WEBHOOK_URL": "https://example.test/hook", "BRIDGE_WEBHOOK_KEY": "FAKE-KEY"}):
+            core.webhook_check(state)
+        self.assertEqual((state["phases"]["webhook"]["domain"], state["phases"]["webhook"]["key_length"]), ("example.test", 8))
+        self.assertEqual(core.host_hint("https://secret-id.m.pipedream.net/x"), "pipedream.net")
+        self.assertNoSecrets()
+
+    def test_dev_auth_starts_the_developer_sign_in_itself(self):
+        class SignedOut(FakeAsk):
+            def __call__(self, args, **kwargs):
+                if args[1:3] == ["smapi", "get-vendor-list"]:
+                    return SimpleNamespace(returncode=1, stdout="", stderr="not signed in")
+                return super().__call__(args, **kwargs)
+        started = []
+        with self.assertRaises(core.Stop) as stop:
+            core.dev_auth(self.state, runner=SignedOut(), starter=lambda p: started.append(p) or True)
+        self.assertEqual((started, stop.exception.category), (["alexa-bridge"], "developer_sign_in"))
+        self.assertIn("click Allow", stop.exception.say)
+        with self.assertRaises(core.Stop) as stop:
+            core.dev_auth(self.state, runner=SignedOut(), starter=lambda p: False)
+        self.assertIn("answer 'y'", stop.exception.message)
+        self.assertIsNone(stop.exception.say)
+
+    def test_ask_configure_questions_get_fixed_answers(self):
+        confirm = "\x1b[32m?\x1b[0m Do you confirm that you used the browser to sign in to Alexa Skills Kit Tools? (Y/n)"
+        aws = "? Do you want to link your AWS account in order to host your Alexa skills? (Y/n)"
+        self.assertEqual(core.configure_reply("Listening on http://localhost...", set()), None)
+        self.assertEqual(core.configure_reply(confirm, set()), ("browser", "y"))
+        self.assertEqual(core.configure_reply(confirm, {"browser"}), None)
+        self.assertEqual(core.configure_reply(aws, {"browser"}), ("aws", "n"))
+        self.assertFalse(core.unknown_question("Switch to 'Login with Amazon' page and sign-in.\nListening on http://localhost"))
+        self.assertTrue(core.unknown_question("\x1b[32m?\x1b[0m Choose the vendor ID for the skills you want to manage"))
+
+    def test_the_browsers_display_wins_over_the_shells(self):
+        with patch.dict(os.environ, {"BRIDGE_DISPLAY": ":6", "DISPLAY": ":5"}):
+            self.assertEqual(core.browser_display(), ":6")
+
+    def test_clipboard_waits_for_the_sign_in_address_and_leaves_other_text(self):
+        reads = iter([("some other text", None), ("https://www.amazon.com/ap/maplanding?x=1", None)])
+        cleared = []
+        def once(runner):
+            text, _ = next(reads)
+            return text, lambda: cleared.append(text)
+        ticks = iter([0, 1, 2]).__next__
+        with patch.object(core, "_clipboard_once", once):
+            text = core.read_clipboard(want=lambda t: "/ap/maplanding" in t, wait=30, sleep=lambda s: None, clock=ticks)
+        self.assertEqual((text, cleared), ("https://www.amazon.com/ap/maplanding?x=1", [text]))
+        with patch.object(core, "_clipboard_once", lambda runner: ("other", lambda: cleared.append("x"))):
+            self.assertEqual(core.read_clipboard(want=lambda t: False, wait=0, sleep=lambda s: None), "")
+        self.assertNotIn("x", cleared)
+
+    def test_uninstall_event_names_no_secrets(self):
+        core.uninstall({"phases": {}}, True)
+        self.assertNotIn("BRIDGE_WEBHOOK", self.out.getvalue())
+        self.assertEqual(self.events()[-1]["event"], "uninstalled")
 
     def test_rejected_or_unreachable_sign_ins_stop_cleanly(self):
         def rejected(seed, transport):
@@ -394,7 +585,7 @@ class CliTests(unittest.TestCase):
         answers = iter(["https://example.test/hook", "FAKE-KEY"])
         core.webhook_set(lambda _: next(answers))
         self.assertEqual(core.read_private("webhook.json")["key"], "FAKE-KEY")
-        self.assertEqual(self.events()[-1]["host"], "example.test")
+        self.assertEqual(self.events()[-1]["domain"], "example.test")
         self.assertNotIn("FAKE-KEY", self.out.getvalue())
 
     def test_english_pack_passes_pack_check(self):

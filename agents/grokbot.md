@@ -7,12 +7,12 @@
 | Requirement | Grokbot feature | Notes |
 | --- | --- | --- |
 | Answering 1: authenticated HTTPS webhook | A routine with a **webhook trigger** | Grokbot generates the URL and key. It can't read them itself; the owner copies them into secret cards |
-| Answering 2: a 2xx reply within 4 seconds | The trigger acknowledges with 200 and runs the routine afterwards | Proven, but not always within 2 seconds: on 9 October 2026 a first request after a deploy missed the old 2-second limit (IKI-85) |
+| Answering 2: a 2xx reply within 4 seconds | The trigger acknowledges with 200 and runs the routine afterwards | Proven. A first request after a deploy has taken more than 2 seconds, so the 4-second limit matters |
 | Answering 3: runs unattended | Routine runs | No approval was asked for the callback to `amazonalexa.com` |
 | Answering 4–5: one callback, tokens kept private | Followed from the routine instructions | Proven |
-| Setup 1: shell | The bot's own computer: Debian Linux with Python 3, Node 20, npm and git. No `ssh-keygen` | Admin rights changed: passwordless `sudo` worked on 6 October 2026, but on 9 October the bot couldn't install packages. The bridge needs nothing beyond the listed tools. Files survive between sessions. Survival across a computer restart is unverified; Update, Recover and Reset remove installed packages, which `bridge preflight` reinstalls |
-| Setup 2: browser handover | The bot's browser with **take control** | The bot reads the sign-in redirect from its own address bar |
-| Setup 3: secret store | **Secure secret cards** (“Stored securely, never shown to your Bot”), available to commands as environment variables | Proven |
+| Setup 1: shell | The bot's own computer: Debian Linux (x86-64) with Python 3, Node, npm, git and `libX11`. No root, no `ssh-keygen`, no tkinter and no clipboard tool | The bridge needs nothing more: it installs ASK CLI under `~/.alexa-bridge/tools` and reads the clipboard itself. Files survive between sessions. An Update, Recover or Reset of the computer removes installed packages; `bridge setup` reinstalls ASK CLI |
+| Setup 2: browser handover | The bot's Chrome with **take control** (one-to-one chats only), and a browser helper that works through the screen, mouse and keyboard | Chrome runs on its own X display (`:6` on 9 October 2026), not the shell's (`:5`); the bridge finds it from the Chrome process |
+| Setup 3: secret store | **Secure secret cards** (“Stored securely, never shown to your Bot”), available to commands as environment variables | Proven. Grokbot can't delete them |
 | Setup 4: saved instructions | **Saved skills**, stored as `SKILL.md` files | Used for `alexa-bridge-maintenance`; the body is kept word for word |
 
 ## How Grokbot does each setup step
@@ -25,18 +25,30 @@ Use `--agent "Grokbot"`.
 
 ### Working folder
 
-Use `/workspace/alexa-bridge` as `<work>`, cloned so that it is the repository root. Don't clone into a subfolder of it; an earlier setup did, and skills then had to search for the checkout.
+Use `/workspace/alexa-bridge` as `<work>`, cloned so that it is the repository root. Don't clone into a subfolder of it.
+
+### Owner questions
+
+Run setup in the owner's **one-to-one** chat: take control doesn't work in group chats, and **New chat** can start one. Ask SETUP step 2's three questions in one message, using choice cards:
+- the name, with your suggestion first and “pick another”
+- the country
+- yes or no for the Amazon account
+
+Later, offer the test Echo, and any developer organisation, as choice cards too. Keep progress messages short; the owner needs only the stops' `say` text.
 
 ### Browser handover
 
-Open the page in your own browser and offer the owner **take control**. Wait until they say they're done, then take control back. Take control isn't available in a group chat: on 9 October 2026 a chat started from **New chat** was one, and the sign-ins had to move to the owner's one-to-one chat. Run setup in the one-to-one chat. For the Amazon sign-in, read the `maplanding` address from your own address bar straight into the private file; never paste it into chat.
+Open the page in your Chrome and offer the owner **take control**. Wait until they say they're done, then take control back.
+
+- **The speech sign-in.** Amazon's last page says “Sorry, we couldn't find that page”, with a dog; tell the owner in advance that this means it worked. Your browser helper then copies the address bar: Ctrl+L, Ctrl+A, Ctrl+C in Chrome. Run `python3 -m bridge setup`. It reads the clipboard on Chrome's display with the standard library, so no clipboard tool is needed. Never paste the address into chat.
+- **The developer sign-in.** `bridge setup` starts `ask configure` itself on Chrome's display and answers its two questions, so the sign-in page opens in your Chrome. Hand control; the owner signs in and clicks **Allow**. When they say the page told them to close it, run `setup` again. An Update, Recover or Reset of your computer can remove this sign-in; `setup` then asks for it again.
 
 ### Connecting the routine
 
 1. Create the routine on yourself, named “<Display name> Alexa bridge”, with a **webhook trigger**, and paste the `routine-text` instructions exactly.
-2. You can't read the routine's webhook URL and key yourself. Post the routine's two field links (Webhook URL, Webhook key) and two **secure secret cards** named `BRIDGE_WEBHOOK_URL` and `BRIDGE_WEBHOOK_KEY`.
-3. Ask the owner to click each field link, copy the value and paste it into its card. The cards make both values available to your commands as environment variables without showing them to you.
-4. Confirm only the URL's hostname and the key's length.
+2. You can't read the routine's webhook URL and key yourself. In **one message**, post the routine's two field links (Webhook URL, Webhook key) and two **secure secret cards** named `BRIDGE_WEBHOOK_URL` and `BRIDGE_WEBHOOK_KEY`. Say something like: “Two connection codes for the routine: click each link, copy, and paste into the matching card. I never see them.”
+3. The links and cards are the only route for the codes, so the owner doesn't need to look anywhere else in the app; if they ask, post the links again.
+4. Run `python3 -m bridge setup`. It confirms only the URL's base domain and the key's length.
 
 ### Approval prompts
 
@@ -44,9 +56,9 @@ In testing, no approval was asked for the routine's POST to an `amazonalexa.com`
 
 ### Saving the maintenance instructions
 
-When setup finishes, use your skill save tool with the `name` and `description` from [`skills/alexa-bridge-maintenance/SKILL.md`](../skills/alexa-bridge-maintenance/SKILL.md) and its body word for word. The tool rebuilds the header and drops any other header fields, which is fine. If an “Alexa bridge maintenance” skill already exists, rewrite it in place by its id instead of adding a second one. In a trial on 8 October 2026, Grokbot stored a skill like this with its body word for word.
+When setup finishes, use your skill save tool with the `name` and `description` from [`skills/alexa-bridge-maintenance/SKILL.md`](../skills/alexa-bridge-maintenance/SKILL.md) and its body word for word. The tool rebuilds the header and drops any other header fields, which is fine. If an “Alexa bridge maintenance” skill already exists, rewrite it in place by its id instead of adding a second one.
 
-To remove the bridge later, also delete the routine and this skill. On 9 October 2026 Grokbot had no tool to delete its secret cards, and the owner couldn't find one in the app either. Removing the routine makes the old values useless, and a new setup asks for fresh ones.
+To remove the bridge later, also delete the routine and this skill. Grokbot can't delete its secret cards, and the owner couldn't find a way in the app either; once the routine is deleted, the old codes are useless, and a new setup asks for fresh ones.
 
 ## Known differences
 

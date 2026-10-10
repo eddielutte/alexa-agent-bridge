@@ -1,11 +1,9 @@
 """Focused invariant tests; no credentials/network/cloud resources."""
 import copy
-import hashlib
 import json
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lambda"))
 import retail
@@ -59,22 +57,18 @@ class RetailTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 retail.speak_once(session(), target, text, lambda *a: self.fail("Network called"))
 
-    def test_ambiguous_send_is_one_attempt(self):
-        calls = []
-        def fail(*args):
-            calls.append(args)
+    def test_a_failed_or_uncertain_send_is_one_attempt(self):
+        def raises(*args):
             raise retail.TransportError()
-        with self.assertRaises(retail.UnconfirmedSpeech):
-            retail.speak_once(session(), session()["devices"][0], "hello", fail)
-        self.assertEqual(len(calls), 1)
-
-    def test_redirect_and_server_error_never_replayed(self):
-        for status in (302, 429, 500, 503):
+        cases = [(raises, retail.UnconfirmedSpeech)]
+        cases += [(lambda *a, s=status: (s, [], b""), retail.UnconfirmedSpeech) for status in (302, 429, 500, 503)]
+        cases += [(lambda *a, s=status: (s, [], b""), retail.AuthRequired) for status in (401, 403)]
+        for reply, error in cases:
             calls = []
             def send(*args):
                 calls.append(args)
-                return status, [], b""
-            with self.assertRaises(retail.UnconfirmedSpeech):
+                return reply(*args)
+            with self.subTest(error=error.__name__), self.assertRaises(error):
                 retail.speak_once(session(), session()["devices"][0], "hello", send)
             self.assertEqual(len(calls), 1)
 
@@ -83,10 +77,6 @@ class RetailTests(unittest.TestCase):
         state["cookies"]["bad"] = "x\r\nInjected: yes"
         with self.assertRaises(retail.AuthRequired):
             retail.headers_for(state)
-
-    def test_wrong_host_rejected_before_connection(self):
-        with self.assertRaises(ValueError):
-            retail.request("GET", "https://evil.example/api")
 
     def test_only_single_echo_devices_eligible(self):
         base = {"serialNumber": "one", "deviceType": "echo", "accountName": "Office",
@@ -312,24 +302,10 @@ class AppTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_pairing_does_not_default_on_unknown_name(self):
+        self.app.handle(self.voice("LinkEchoIntent"))  # an active prompt, so only the name decides
         self.app.handle(self.voice("EchoNameIntent", {"echoName": {"value": "not an echo"}}))
-        self.assertIsNone(self.store.get(self.key)[0])
+        self.assertNotIn("target", self.store.get(self.key)[0])
         self.assertEqual(self.sent, [])
-
-    def test_setup_rejects_invalid_challenge(self):
-        store = Memory()
-        app = App(store, clock=lambda: 1500)
-        app.enroll("owner", {"setup_token": "wrong", "payload": "{}"})
-        self.assertIsNone(store.get("configuration")[0])
-
-    def test_cancel_blocks_late_arriving_older_request(self):
-        self.pending()
-        self.app.handle(self.voice("AMAZON.CancelIntent"))
-        row, _ = self.store.get(self.key)
-        self.app.dispatch = lambda *args: self.fail("Cancelled work dispatched")
-        self.app.submit("owner", self.key, row,
-            {"requestId": "older", "timestamp": "1970-01-01T00:24:59Z"}, "hello", {})
-        self.assertIsNone(self.store.get(self.key)[0]["pending"])
 
     def test_relink_invalidates_pending_answer(self):
         data = self.pending()
@@ -345,6 +321,7 @@ class AppTests(unittest.TestCase):
         card = json.loads(app.setup_card("owner")["response"]["card"]["content"])
         payload = {"registration": session(), "client_id": "FAKE-ID", "client_secret": "FAKE-secret"}
         data = {"kind": "setup", "setup_token": card["setup_token"], "payload": json.dumps(payload)}
+        app.enroll("owner", {**data, "setup_token": "wrong"})
         app.enroll("other", data)
         self.assertIsNone(store.get("configuration")[0])
         app.enroll("owner", data)

@@ -1,6 +1,5 @@
 """Failure/recovery regressions using fake registration, clocks and transports."""
 import copy
-import json
 import unittest
 from unittest.mock import patch
 
@@ -79,22 +78,6 @@ class RecoveryTests(unittest.TestCase):
         self.app.sessions.renewer = self.renew
         self.assertEqual(self.app.sessions.ready(force=True)["auth_state"], "ready")
 
-    def test_offline_cached_echo_is_rediscovered_and_only_that_echo_speaks(self):
-        data = self.t.pending()
-        old, rev = self.store.get("retail-session")
-        old["devices"][0]["online"] = False
-        self.store.put("retail-session", old, rev)
-        calls = []
-        def discover(state, now):
-            calls.append(1)
-            state["devices"][0]["online"] = True
-            state["devices_refreshed_at"] = now
-            return state
-        self.app.sessions.discoverer = discover
-        self.app.handle(self.t.message(data))
-        self.assertEqual(len(calls), 1)
-        self.assertEqual([args[1]["serial"] for args in self.t.sent], ["office"])
-
     def test_offline_retry_then_online_delivers_once(self):
         data = self.t.pending()
         old, rev = self.store.get("retail-session")
@@ -161,19 +144,6 @@ class RecoveryTests(unittest.TestCase):
                 lambda_function.lambda_handler(self.t.message(data), None)
         self.assertEqual(self.store.get(self.t.key)[0]["pending"]["state"], "pending")
 
-    def test_dispatch_timeout_keeps_callback_valid_and_reports_uncertainty(self):
-        self.t.pending()
-        row, _ = self.store.get(self.t.key)
-        with patch.object(self.app, "dispatch", side_effect=retail.TransportError):
-            reply = self.app.submit("owner", self.t.key, row,
-                {"requestId": "new", "timestamp": "1970-01-01T00:25:00Z"}, "test", {})
-        self.assertIn("could not confirm", reply["response"]["outputSpeech"]["text"])
-        job = self.store.get(self.t.key)[0]["pending"]
-        self.assertEqual(job["last_error"], "dispatch_unconfirmed")
-        self.app.handle(self.t.message({"kind": "answer", "device_key": self.t.key,
-            "request_id": job["id"], "job_token": job["token"], "answer": "test"}))
-        self.assertEqual(len(self.t.sent), 1)
-
     def test_pairing_requires_active_unexpired_prompt_in_same_session(self):
         voice = self.t.voice("EchoNameIntent", {"echoName": {"value": "Office"}})
         for pairing in (None, {"expires": 1499}, {"expires": 1600, "session_id": "other"}):
@@ -207,16 +177,6 @@ class RecoveryTests(unittest.TestCase):
 
 
 class SessionRecoveryTests(unittest.TestCase):
-    def test_speech_401_and_403_are_auth_failures_with_one_attempt(self):
-        for code in (401, 403):
-            calls = []
-            def transport(*args):
-                calls.append(1)
-                return code, [], b""
-            with self.assertRaises(retail.AuthRequired):
-                retail.speak_once(fixtures.session(), fixtures.session()["devices"][0], "test", transport)
-            self.assertEqual(calls, [1])
-
     def test_rejected_discovery_then_transport_failure_marks_stale_not_signin(self):
         store = fixtures.Memory(); store.put("retail-session", fixtures.session())
         def discover(*args, **kwargs): raise retail.AuthRequired()

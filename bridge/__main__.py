@@ -12,17 +12,19 @@ from . import core
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="bridge", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("setup", help="run every next step until the owner is needed (safe to repeat)")
     pre = sub.add_parser("preflight", help="check and install tools")
     pre.add_argument("--no-install", action="store_true")
-    ch = sub.add_parser("choose", help="record the skill name, country and language")
-    ch.add_argument("--name", required=True, help='invocation, e.g. "nova a. i."')
-    ch.add_argument("--country", required=True, help="country code, e.g. GB")
+    ch = sub.add_parser("choose", help="record the skill name, country and language, or (alone) the test Echo")
+    ch.add_argument("--name", help='invocation, e.g. "nova a. i."')
+    ch.add_argument("--country", help="country code, e.g. GB")
     ch.add_argument("--display-name")
     ch.add_argument("--locale")
     ch.add_argument("--language", help="language pack, default en")
     ch.add_argument("--test-echo")
     ch.add_argument("--agent", help="the agent's spoken name, as the owner calls it")
-    sub.add_parser("doctor", help="probe the country's Amazon services")
+    doc = sub.add_parser("doctor", help="probe the country's Amazon services")
+    doc.add_argument("--network", action="store_true", help="also time Amazon's sign-in endpoint from this computer")
     auth = sub.add_parser("dev-auth", help="check the Amazon developer sign-in")
     auth.add_argument("--profile", default=core.DEFAULT_PROFILE)
     auth.add_argument("--vendor", help="developer organisation ID, when the account has several")
@@ -40,25 +42,40 @@ def main(argv=None):
     pc = sub.add_parser("pack-check", help="check a drafted language pack against English")
     pc.add_argument("--language", required=True)
     sub.add_parser("webhook-set", help="type the routine's webhook URL and key into hidden prompts")
+    sub.add_parser("webhook-check", help="confirm the routine's URL and key are stored (shows host and length only)")
     test = sub.add_parser("test", help="connection test (or --status) through the simulator")
     test.add_argument("--status", action="store_true")
     sub.add_parser("status", help="show progress and the next step")
     ver = sub.add_parser("verify", help="check a release tag's signature (built in; no ssh-keygen needed)")
     ver.add_argument("--tag", required=True)
     up = sub.add_parser("update", help="deploy a newer signed release")
-    up.add_argument("--tag", required=True)
+    which = up.add_mutually_exclusive_group(required=True)
+    which.add_argument("--tag")
+    which.add_argument("--latest", action="store_true", help="the newest release, if it's newer than this one")
     rm = sub.add_parser("uninstall", help="delete the skill and local state")
     rm.add_argument("--yes", action="store_true")
+    hidden = sub.add_parser("_dev-signin")  # started in the background by dev-auth
+    hidden.add_argument("--profile", default=core.DEFAULT_PROFILE)
     args = parser.parse_args(argv)
+    if args.command == "_dev-signin":
+        core.drive_configure(args.profile)
+        return 0
     state = core.load_state()
     try:
-        if args.command == "preflight":
+        if args.command == "setup":
+            core.setup(state)
+        elif args.command == "preflight":
             core.preflight(state, install=not args.no_install)
+        elif args.command == "choose" and args.test_echo and not any(
+                (args.name, args.country, args.display_name, args.locale, args.language, args.agent)):
+            core.choose_test_echo(state, args.test_echo)
         elif args.command == "choose":
+            if not (args.name and args.country):
+                parser.error("choose needs --name and --country (or --test-echo alone)")
             core.choose(state, args.name, args.country, args.display_name, args.locale, args.language, args.test_echo,
                         args.agent)
         elif args.command == "doctor":
-            core.doctor(state)
+            core.doctor(state, network=args.network)
         elif args.command == "dev-auth":
             core.dev_auth(state, args.profile, vendor=args.vendor)
         elif args.command == "create":
@@ -80,6 +97,8 @@ def main(argv=None):
             core.pack_check(args.language)
         elif args.command == "webhook-set":
             core.webhook_set()
+        elif args.command == "webhook-check":
+            core.webhook_check(state)
         elif args.command == "routine-text":
             core.routine_text(state)
         elif args.command == "test":
@@ -89,11 +108,12 @@ def main(argv=None):
         elif args.command == "verify":
             core.verify_install(state, args.tag)
         elif args.command == "update":
-            core.update(state, args.tag)
+            core.update(state, args.tag)  # no tag: --latest
         elif args.command == "uninstall":
             core.uninstall(state, args.yes)
     except core.Stop as stop:
-        core.emit("stopped", category=stop.category, message=stop.message)
+        core.emit("stopped", category=stop.category, message=stop.message, say=stop.say, do=stop.do,
+                  who="owner" if stop.say else "agent")
         return 2
     except core.Failed as failure:
         core.emit("failed", category=failure.category)

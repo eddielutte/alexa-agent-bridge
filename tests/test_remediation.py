@@ -1,11 +1,5 @@
 """Regression tests for delivery, dispatch and session edge cases: no credentials, live services or device actions."""
-import copy
-import io
 import json
-from contextlib import redirect_stdout
-from pathlib import Path
-import sys
-import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -64,6 +58,11 @@ class AppRegressionTests(unittest.TestCase):
             self.assertEqual(job["state"], expected)
             self.assertEqual("token" in job, expected == "pending")
             self.assertIn("not sent" if expected == "dispatch_failed" else "could not confirm", self.text(reply))
+        # The uncertain job's callback stays valid, so a late answer is still spoken once.
+        self.assertEqual(job["last_error"], "dispatch_unconfirmed")
+        self.app.handle(self.t.message({"kind": "answer", "device_key": self.t.key, "request_id": job["id"],
+                                        "job_token": job["token"], "answer": "test"}))
+        self.assertEqual(len(self.t.sent), 1)
 
     def test_nonduplicate_route_or_generation_conflict_requests_repeat(self):
         for field, value in (("target", {"serial": "bedroom", "type": "echo"}), ("generation", 1)):
@@ -90,6 +89,7 @@ class AppRegressionTests(unittest.TestCase):
         reply = self.submit(req={"requestId": "old", "timestamp": "1970-01-01T00:24:59Z"})
         self.assertIn("not sent", self.text(reply))
         self.assertEqual(self.calls, [])
+        self.assertIsNone(self.store.get(self.t.key)[0]["pending"])
 
     def test_cancel_after_claim_still_prevents_speech(self):
         data = self.t.pending(); original = self.store.mutate
@@ -222,20 +222,16 @@ class SessionRegressionTests(unittest.TestCase):
 
 
 class BoundaryTests(unittest.TestCase):
-    def test_only_pre_webhook_failures_are_definite_not_sent(self):
+    def test_a_token_failure_before_the_webhook_is_definitely_not_sent(self):
         config={"webhook_url":"https://example.test/hook", "webhook_key":"FAKE", "client_id":"FAKE", "client_secret":"FAKE"}
         job={"id":"job", "token":"FAKE", "api_host":"api.eu.amazonalexa.com"}
-        for stage in ("token", "webhook"):
-            calls=[]
-            def sender(method,url,*args):
-                calls.append(url)
-                if '/auth/o2/token' in url:
-                    return (503,b'{}') if stage=="token" else (200,b'{"access_token":"FAKE"}')
-                return 503,b'{}'
-            with self.assertRaises(retail.TransportError) as caught:
-                messaging.dispatch(config,"owner","key",job,"test",sender)
-            self.assertEqual(isinstance(caught.exception,messaging.DispatchNotSent),stage=="token")
-            self.assertEqual(len(calls),1 if stage=="token" else 2)
+        calls=[]
+        def sender(method,url,*args):
+            calls.append(url)
+            return 503,b'{}'
+        with self.assertRaises(messaging.DispatchNotSent):
+            messaging.dispatch(config,"owner","key",job,"test",sender)
+        self.assertEqual(calls,["https://api.amazon.com/auth/o2/token"])
 
     def test_any_2xx_webhook_reply_confirms_and_nothing_else_does(self):
         config={"webhook_url":"https://example.test/hook", "webhook_key":"FAKE", "client_id":"FAKE", "client_secret":"FAKE"}
