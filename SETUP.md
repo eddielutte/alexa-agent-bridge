@@ -26,7 +26,7 @@ This guide says **what** must happen. Your profile in [`agents/`](agents/README.
    - Exit code `2` means stopped. The `stopped` event has a `message` for you, `say` (when set) for the owner, and `do`, your next action. Tell the owner the `say` text in your own words without changing its meaning, wait for them if it asks something, then do `do`.
    - Exit code `1` means failed. Look up the category in [When something goes wrong](#when-something-goes-wrong).
 7. **Every command can be run again safely.** If one is cut off, or your computer restarts or is reset, run `python3 -m bridge setup` again; it carries on from where it was. `python3 -m bridge status` shows the next command.
-8. **Speak plainly to the owner.** Say “I checked this is the genuine release”, not “signature” or “tag”; “two connection codes for the routine”, not “webhook URL and key”; “a spare device entry in your Amazon account”, not “AioAmazonDevices registration”. Group your questions into one message, with choices where your platform has them.
+8. **Speak plainly to the owner.** Say “I checked this is the genuine release”, not “signature” or “tag”; “two connection codes for the routine”, not “webhook URL and key”; “a spare device entry in your Amazon account”, not “device registration”. Group your questions into one message, with choices where your platform has them.
 
 ## The steps
 

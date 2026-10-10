@@ -34,7 +34,7 @@ The owner hears this when Amazon has withdrawn the skill's sign-in. Their Echo l
 2. Run `python3 -m bridge uninstall --yes`. It deletes the skill and `~/.alexa-bridge`, including the bridge's own ASK CLI.
 3. Remove the ASK CLI's developer sign-in: delete the `alexa-bridge` profile from `~/.ask/cli_config`, or delete `~/.ask` if nothing else on your computer uses ASK CLI.
 4. Delete your “Alexa bridge” routine, the `BRIDGE_WEBHOOK_URL` and `BRIDGE_WEBHOOK_KEY` secrets, and the saved maintenance skill. If you can't delete stored secrets, tell the owner; once the routine is deleted, they're no longer usable.
-5. Tell the owner they can remove the spare device entries the bridge's sign-ins left in their Amazon account. They're named like “<first name>'s AioAmazonDevices” (or “…2nd AioAmazonDevices”), under Manage Content and Devices → Devices → Alexa. Each sign-in that Amazon accepted made one, including any that were abandoned. If they run more than one bridge, check the dates before removing any.
+5. Tell the owner they can remove the spare device entries the bridge's sign-ins left in their Amazon account. They're under Manage Content and Devices → Devices → Alexa, named like “<first name>'s <skill name> bridge (10 Oct 2026, 09:41 UTC)”, with the date and time of that sign-in. Entries from releases before v0.1.4 are named “<first name>'s AioAmazonDevices” (or “…2nd AioAmazonDevices”). Each sign-in that Amazon accepted made one, including any that were abandoned. Keep the newest entry for the skill: it's the one the skill uses now. Removing it stops answers being spoken until the owner signs in again.
 
 ## Answering questions through the routine
 

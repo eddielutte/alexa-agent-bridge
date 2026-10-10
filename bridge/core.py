@@ -954,11 +954,23 @@ def amazon(method, url, headers=None, data=None, timeout=SETUP_TIMEOUT, retry=Tr
         return retail.request(method, url, headers, data, timeout=timeout)
 
 
-def register(code, pkce, transport=amazon):
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def registration_name(display_name, now=None):
+    """The label in the owner's Amazon devices list, e.g. "Sam's Nova AI bridge (10 Oct 2026, 09:41 UTC)".
+    Amazon fills in the placeholders, adding "2nd", "3rd"… only for exact duplicates."""
+    label = re.sub(r"[^\w .'-]", "", display_name or "").strip()[:30] or "Alexa"
+    t = time.gmtime(now)
+    return "%%FIRST_NAME%%'s%%DUPE_STRATEGY_1ST%%%s bridge (%d %s %d, %02d:%02d UTC)" % (
+        label, t.tm_mday, MONTHS[t.tm_mon - 1], t.tm_year, t.tm_hour, t.tm_min)
+
+
+def register(code, pkce, transport=amazon, name=None):
     body = {"requested_extensions": ["device_info", "customer_info"],
             "cookies": {"website_cookies": [], "domain": ".amazon.com"},
             "registration_data": {"domain": "Device", "app_version": APP_VERSION, "device_type": DEVICE_TYPE,
-                                  "device_name": "%FIRST_NAME%'s%DUPE_STRATEGY_1ST%" + APP_NAME, "os_version": "18.5",
+                                  "device_name": name or registration_name(""), "os_version": "18.5",
                                   "device_serial": pkce["serial"], "device_model": "iPhone", "app_name": APP_NAME,
                                   "software_version": "35602678"},
             "auth_data": {"use_global_authentication": "true", "client_id": client_id(pkce["serial"]),
@@ -972,8 +984,8 @@ def register(code, pkce, transport=amazon):
                                    json.dumps(body).encode(), retry=False)
     except retail.TransportError:
         raise Stop("signin_unreachable", "Amazon couldn't be reached to finish the sign-in. Start the sign-in again; "
-                   "if a spare \"AioAmazonDevices\" entry appears in the owner's Amazon devices list, they can remove "
-                   "it.") from None
+                   "if a spare \"… bridge (date, time)\" entry appears in the owner's Amazon devices list, they can "
+                   "remove it.") from None
     if status != 200:
         raise Stop("signin_refused", "Amazon did not accept that sign-in (HTTP %d). Start the sign-in again." % status)
     return retail.json_body(raw)["response"]["success"]
@@ -996,7 +1008,7 @@ def signin_finish(state, source, transport=amazon, renew=retail.renew, clipboard
                    say="Has Amazon shown the “Sorry, we couldn't find that page” dog yet? If not, please finish "
                        "signing in and tell me when you see it.")
     drop_private("pkce.json")
-    success = register(code, pkce, transport)
+    success = register(code, pkce, transport, registration_name(state["choices"].get("display_name")))
     domain = retail.COUNTRIES[state["choices"]["country"]]["domain"]
     # Kept from here on, so a failed check is repeated with `signin check`, not a new sign-in and registration.
     write_private("seed.json", {"schema": 1, "domain": domain, "customer_id": "pending",

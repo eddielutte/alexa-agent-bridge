@@ -262,6 +262,9 @@ class CliTests(unittest.TestCase):
             if url.endswith("/auth/register"):
                 self.assertEqual(kwargs, {"retry": False})
                 self.assertIn(b"FAKE-CODE", data)
+                registration = json.loads(data)["registration_data"]
+                self.assertRegex(registration["device_name"], r"^%FIRST_NAME%'s%DUPE_STRATEGY_1ST%Nova AI bridge \(")
+                self.assertEqual(registration["app_name"], "AioAmazonDevices")
                 return 200, [], json.dumps({"response": {"success": {
                     "tokens": {"bearer": {"refresh_token": "FAKE-REFRESH"}},
                     "extensions": {"customer_info": {"home_region": home_region}}}}}).encode()
@@ -531,6 +534,16 @@ class CliTests(unittest.TestCase):
         core.uninstall({"phases": {}}, True)
         self.assertNotIn("BRIDGE_WEBHOOK", self.out.getvalue())
         self.assertEqual(self.events()[-1]["event"], "uninstalled")
+
+    def test_registration_name_shows_the_skill_date_and_time(self):
+        at = 1791625260  # 10 Oct 2026, 09:41 UTC
+        self.assertEqual(core.registration_name("Nova AI", at),
+                         "%FIRST_NAME%'s%DUPE_STRATEGY_1ST%Nova AI bridge (10 Oct 2026, 09:41 UTC)")
+        name = core.registration_name("Küchen %FIRST_NAME% Hilfe " + "x" * 40, at)
+        label = name[len("%FIRST_NAME%'s%DUPE_STRATEGY_1ST%"):name.index(" bridge (")]
+        self.assertTrue(label.startswith("Küchen FIRST_NAME Hilfe"))  # no placeholder can be injected
+        self.assertEqual(len(label), 30)
+        self.assertIn("%DUPE_STRATEGY_1ST%Alexa bridge (", core.registration_name(None, at))
 
     def test_rejected_or_unreachable_sign_ins_stop_cleanly(self):
         def rejected(seed, transport):
