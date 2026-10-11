@@ -493,7 +493,7 @@ def drive_configure(profile, limit=DEV_SIGNIN_LIMIT, quiet_for=3, exe=None):
         os.kill(pid, 15)
     _, code = os.waitpid(pid, 0)
     drop_private(DEV_CODE)
-    note(stage or ("done" if os.waitstatus_to_exitcode(code) == 0 else "failed"))
+    note(stage or ("done" if os.WIFEXITED(code) and os.WEXITSTATUS(code) == 0 else "failed"))  # any Python 3
 
 
 def _dev_signin_record():
