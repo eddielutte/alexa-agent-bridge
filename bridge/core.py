@@ -1674,11 +1674,83 @@ def update(state, tag=None, runner=run, deployer=_fresh_deploy):
         raise Failed("deploy_failed")
 
 
-def uninstall(state, confirm, runner=run):
+def skill_card(ask, state, sleep):
+    """The installed skill's setup card (the owner's one-use token and Skill Messaging user), or {}."""
+    choices = state["choices"]
+    _, card = simulate(ask, state["skill_id"], choices["locale"],
+                       "ask %s to repair cloud authentication" % choices["invocation"], sleep)
+    try:
+        card = json.loads(card or "")
+    except ValueError:
+        return {}
+    return card if isinstance(card, dict) and card.get("skill_id") == state["skill_id"] else {}
+
+
+REMOVAL_RESULTS = ("removed", "refused", "already_invalid", "none", "failed")
+
+
+def status_card(ask, state, sleep):
+    """The card from "check cloud status": the skill's last device-entry removal, tagged with its request."""
+    choices = state["choices"]
+    _, card = simulate(ask, state["skill_id"], choices["locale"],
+                       "ask %s to check cloud status" % choices["invocation"], sleep)
+    try:
+        card = json.loads(card or "")
+    except ValueError:
+        return {}
+    return card if isinstance(card, dict) and card.get("skill_id") == state["skill_id"] else {}
+
+
+def skill_removal(state, runner, sleep, sender):
+    """Ask the installed skill to remove its own device entry (only it holds that sign-in), and read back the
+    result for this request only. Best effort: one of REMOVAL_RESULTS, or "unknown"."""
+    try:
+        ask = Ask(state["profile"], runner)
+        card = skill_card(ask, state, sleep)
+        if not card.get("setup_token") or not card.get("user_id"):
+            return "unknown"
+        request = hashlib.sha256(card["setup_token"].encode("utf-8")).hexdigest()[:16]
+        client, secret = messaging_credentials(ask, state["skill_id"], sleep)
+        token = messaging.messaging_token({"client_id": client, "client_secret": secret}, sender)
+        messaging.send_message(card["user_id"], token, {"kind": "deregister", "setup_token": card["setup_token"]},
+                               sender, host=retail.messaging_host(state["choices"]["country"]))
+        del client, secret, token
+        for wait in (8, 5, 5, 5):  # the skill handles the message in its own invocation, as for enrolment
+            sleep(wait)
+            got = status_card(ask, state, sleep)
+            if got.get("for") == request and got.get("deregistration") in REMOVAL_RESULTS:
+                return got["deregistration"]
+    except Exception:  # best effort: an unexpected reply must never stop the uninstall
+        pass
+    return "unknown"
+
+
+def remove_device_entry(state, runner=run, sleep=time.sleep, sender=messaging.send, transport=amazon):
+    """Before the skill is deleted, remove the bridge's own entries from the owner's Amazon devices list: a sign-in
+    made here but not yet sent to the skill, and the skill's own. "removed" or "none" when nothing is left that the
+    bridge knows of; otherwise the first other result (see REMOVAL_RESULTS), or "unknown"."""
+    results = []
+    seed = read_private("seed.json")
+    if seed:
+        try:
+            results.append(retail.deregister(seed, transport))
+        except Exception:
+            results.append("failed")
+    if "enrol" in state.get("phases", {}) and state.get("skill_id") and state.get("profile") and state.get("choices"):
+        results.append(skill_removal(state, runner, sleep, sender))
+    return next((r for r in results if r not in ("removed", "none")), "removed" if results else "none")
+
+
+def uninstall(state, confirm, runner=run, sleep=time.sleep, sender=messaging.send):
     if not confirm:
         raise Stop("confirm_uninstall", "This deletes the Alexa skill and its stored data. Run again with --yes to confirm.")
+    device = remove_device_entry(state, runner, sleep, sender)
     if state.get("skill_id") and state.get("profile"):
         Ask(state["profile"], runner).call("delete-skill", "-s", state["skill_id"], missing_ok=True)
     shutil.rmtree(home(), ignore_errors=True)
-    emit("uninstalled", next="Delete the agent's Alexa bridge routine and the two secrets that hold its address "
-         "and key, if your agent can.")
+    removed = device in ("removed", "none")
+    emit("uninstalled", device_entry=device,
+         next=("Delete the agent's Alexa bridge routine and the two secrets that hold its address and key, if your "
+               "agent can." + ("" if removed else " The skill's entry in the owner's Amazon devices list couldn't be "
+               "removed automatically: tell the owner to remove the one named like \"<first name>'s <skill name> "
+               "bridge (date, time UTC)\" under Manage Content and Devices > Devices > Alexa.")))

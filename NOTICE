@@ -8,5 +8,9 @@ lambda/retail.py and bridge/core.py follow the protocol implemented by
 aioamazondevices (https://github.com/chemelli74/aioamazondevices), version 16.3.1,
 which is licensed under the Apache License, Version 2.0. With thanks to its authors.
 
+The device deregistration request in lambda/retail.py follows alexapy
+(https://gitlab.com/keatontaylor/alexapy), version 1.31.0, which is licensed under the
+Apache License, Version 2.0. With thanks to its authors.
+
 tests/data/wycheproof_ed25519_test.json is from Project Wycheproof
 (https://github.com/C2SP/wycheproof), licensed under the Apache License, Version 2.0.

@@ -108,6 +108,38 @@ class RetailTests(unittest.TestCase):
         self.assertEqual(original["cookies"], {"csrf": "STALE"})
         self.assertEqual(len(calls), 3)
 
+    def test_deregistration_removes_only_this_registration(self):
+        calls = []
+        def amazon(token_status=200, token_body=b'{"access_token":"FAKE-access","expires_in":3600}',
+                   deregister_status=200, fail_post=False):
+            def transport(method, url, headers=None, data=None, **kwargs):
+                calls.append((url, headers, data))
+                if url.endswith("/auth/token"):
+                    return token_status, [], token_body
+                if fail_post:
+                    raise retail.TransportError("Amazon connection failed")
+                return deregister_status, [], b"{}"
+            return transport
+        self.assertEqual(retail.deregister(session(), amazon()), "removed")
+        token_form, (url, headers, body) = calls[0][2], calls[1]
+        self.assertIn(b"requested_token_type=access_token", token_form)
+        self.assertIn(b"source_token=FAKE-refresh", token_form)
+        self.assertEqual((url, headers["Authorization"], json.loads(body)),
+                         ("https://api.amazon.com/auth/deregister", "Bearer FAKE-access",
+                          {"requested_deregister_type": "deregister_device"}))
+        self.assertEqual(retail.deregister(session(), amazon(deregister_status=400)), "refused")
+        for body in (b'{"error":"invalid_grant"}', b'{"response":{"error":{"code":"invalid_token"}}}'):
+            calls.clear()
+            self.assertEqual(retail.deregister(session(), amazon(token_status=400, token_body=body)), "already_invalid")
+            self.assertEqual(len(calls), 1)  # Amazon refuses the sign-in itself: no deregister call
+        for status, body in ((401, b"{}"), (403, b'{"error":"invalid_grant"}'), (500, b""), (200, b'{"x":1}')):
+            with self.assertRaises(retail.TransportError):  # not proof the sign-in is gone: can't tell
+                retail.deregister(session(), amazon(token_status=status, token_body=body))
+        with self.assertRaises(retail.TransportError):
+            retail.deregister(session(), amazon(fail_post=True))
+        with self.assertRaises(retail.RegistrationRejected):
+            retail.deregister({"schema": 1}, amazon())
+
     def test_partial_renewal_failure_preserves_registration(self):
         original = session()
         def fail(*args):
@@ -177,11 +209,12 @@ class AppTests(unittest.TestCase):
         self.store.put("configuration", {"owner_id": "owner", "seed": session(),
                                         "test_device_name": "Office Echo"})
         self.store.put("retail-session", session())
-        self.sent = []
+        self.sent, self.removed = [], []
         sessions = Sessions(self.store, lambda: 1500,
             discoverer=lambda state, now: {**state, "devices_refreshed_at": now})
         self.app = App(self.store, sessions=sessions, clock=lambda: 1500,
-            speaker=lambda *args: self.sent.append(args) or "accepted_by_amazon")
+            speaker=lambda *args: self.sent.append(args) or "accepted_by_amazon",
+            deregisterer=lambda state: self.removed.append(state["refresh_token"]) or "removed")
         self.key = "device:" + digest("owner|device")
 
     def voice(self, name, slots=None, user="owner", device="device"):
@@ -330,13 +363,62 @@ class AppTests(unittest.TestCase):
         self.assertEqual(before, store.rows)
         self.assertEqual(store.get("configuration")[0]["owner_id"], "owner")
 
-    def test_reenrollment_changes_only_owners_seed(self):
-        card = json.loads(self.app.setup_card("owner")["response"]["card"]["content"])
-        new = session()
-        new["refresh_token"] = "FAKE-new"
-        self.app.enroll("owner", {"setup_token": card["setup_token"], "payload": json.dumps({
-            "registration": new, "client_id": "FAKE-ID", "client_secret": "FAKE-secret"})})
+    def test_reenrollment_changes_only_owners_seed_and_removes_the_old_device_entry(self):
+        def enrol(refresh_token):
+            card = json.loads(self.app.setup_card("owner")["response"]["card"]["content"])
+            new = session()
+            new["refresh_token"] = refresh_token
+            self.app.enroll("owner", {"setup_token": card["setup_token"], "payload": json.dumps({
+                "registration": new, "client_id": "FAKE-ID", "client_secret": "FAKE-secret"})})
+        enrol("FAKE-new")
         self.assertEqual(self.store.get("retail-session")[0]["refresh_token"], "FAKE-new")
+        self.assertEqual(self.removed, ["FAKE-refresh"])  # a sign-in repair removes the replaced registration
+        enrol("FAKE-new")
+        self.assertEqual(self.removed, ["FAKE-refresh"])  # the same registration again: nothing removed
+
+    def test_uninstall_removes_only_the_skills_own_device_entry_with_a_one_use_owner_token(self):
+        def token(user="owner"):
+            return json.loads(self.app.setup_card(user)["response"]["card"]["content"])["setup_token"]
+        def deregister(value, user="owner"):
+            self.app.handle(self.message({"kind": "deregister", "setup_token": value}, user))
+        def result():  # read back through "check cloud status", which issues no new token
+            card = self.app.handle(self.voice("StatusIntent"))["response"].get("card")
+            return json.loads(card["content"]) if card else {}
+        self.assertEqual(result(), {})
+        first = token()
+        deregister("wrong")
+        deregister(token("other"), user="other")  # a non-owner's own valid token is still refused
+        self.assertEqual(self.removed, [])
+        deregister(first)
+        deregister(first)  # one use
+        self.assertEqual(self.removed, ["FAKE-refresh"])
+        self.assertEqual(result(), {"skill_id": SKILL_ID, "deregistration": "removed", "for": digest(first)[:16]})
+        self.assertEqual(self.store.get("retail-session")[0]["auth_state"], "sign_in_required")
+        self.app.deregisterer = lambda state: (_ for _ in ()).throw(retail.TransportError("Connection failed"))
+        second = token()
+        deregister(second)
+        self.assertEqual((result()["deregistration"], result()["for"]), ("failed", digest(second)[:16]))
+
+    def test_an_interrupted_enrolment_leaves_no_entry_behind_on_uninstall(self):
+        config, revision = self.store.get("configuration")
+        newer = {**session(), "refresh_token": "FAKE-newer", "enrollment_id": "e2"}
+        self.store.put("configuration", {**config, "seed": newer, "enrollment_id": "e2"}, revision)
+        card = json.loads(self.app.setup_card("owner")["response"]["card"]["content"])
+        self.app.handle(self.message({"kind": "deregister", "setup_token": card["setup_token"]}))
+        self.assertEqual(self.removed, ["FAKE-refresh", "FAKE-newer"])  # both the stale and the configured one
+
+    def test_enrolment_completes_when_removing_the_old_entry_fails(self):
+        for outcome in ("refused", retail.TransportError("Connection failed")):
+            def deregisterer(state, outcome=outcome):
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            self.app.deregisterer = deregisterer
+            card = json.loads(self.app.setup_card("owner")["response"]["card"]["content"])
+            fresh = {**session(), "refresh_token": "FAKE-" + str(len(self.store.rows))}
+            self.app.enroll("owner", {"setup_token": card["setup_token"], "payload": json.dumps({
+                "registration": fresh, "client_id": "FAKE-ID", "client_secret": "FAKE-secret"})})
+            self.assertEqual(self.store.get("retail-session")[0]["refresh_token"], fresh["refresh_token"])
 
     def test_wrong_skill_no_effect(self):
         event = self.voice("ProofIntent")

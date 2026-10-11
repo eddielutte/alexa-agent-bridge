@@ -104,10 +104,10 @@ def spoken_request(intent):
 
 class App:
     def __init__(self, store, sessions=None, clock=time.time, dispatch=messaging.dispatch,
-                 speaker=retail.speak_once):
+                 speaker=retail.speak_once, deregisterer=retail.deregister):
         self.store, self.clock = store, clock
         self.sessions = sessions or Sessions(store, clock)
-        self.dispatch, self.speaker = dispatch, speaker
+        self.dispatch, self.speaker, self.deregisterer = dispatch, speaker, deregisterer
 
     def setup_card(self, user):
         token = secrets.token_urlsafe(24)
@@ -116,15 +116,69 @@ class App:
         return response(say("setup_ready"), card={"schema": 2, "skill_id": SKILL_ID, "user_id": user,
                                                   "setup_token": token, "country": CONFIG["country"]})
 
-    def enroll(self, user, message):
+    def removal_card(self):
+        """The last device-entry removal, tagged with the request it answers, for `bridge uninstall` to read back
+        through "check cloud status" (which, unlike the setup card, issues no new token)."""
+        removal, _ = self.store.get("deregistration")
+        if not removal:
+            return None
+        return {"skill_id": SKILL_ID, "deregistration": removal.get("result"), "for": removal.get("for")}
+
+    def setup_challenge(self, user, message):
+        """The owner's unused, unexpired setup challenge matching the message's token: (challenge, revision, key)."""
         token = message.get("setup_token", "")
         if not isinstance(token, str) or len(token) > 100:
-            return ACK
+            return None
         key = "setup:" + digest(user)
         challenge, revision = self.store.get(key)
         if (not challenge or challenge["expires"] < self.clock()
                 or challenge.get("used") or not hmac.compare_digest(challenge["hash"], digest(token))):
+            return None
+        return challenge, revision, key
+
+    def remove_registration(self, state, reason):
+        """Best effort: ask Amazon to remove this registration's device entry. Never raises."""
+        started = time.monotonic()
+        try:
+            result = self.deregisterer(state)
+        except (retail.TransportError, retail.AuthRequired, ValueError, KeyError, TypeError):
+            result = "failed"
+        print(json.dumps({"event": "hosted_deregistration", "reason": reason, "result": result,
+                          "elapsed_ms": round((time.monotonic() - started) * 1000)}))
+        return result
+
+    def deregister(self, user, message):
+        """`bridge uninstall`: remove the skill's own Amazon device entry before the skill is deleted. Takes the
+        same one-use, owner-bound setup token as enrolment. The result, tagged with that request, is read back
+        from the "check cloud status" card."""
+        found = self.setup_challenge(user, message)
+        config, _ = self.store.get("configuration")
+        if not found or not config or config["owner_id"] != user:
             return ACK
+        challenge, revision, key = found
+        challenge["used"] = True
+        self.store.put(key, challenge, revision)
+        result = "failed"
+        try:
+            old, _ = self.store.get("retail-session")
+            self.ensure_seed(config)  # an enrolment cut off before this would otherwise leave its entry behind
+            state, _ = self.store.get("retail-session")
+            if old and state and old.get("refresh_token") != state.get("refresh_token"):
+                self.remove_registration(old, "replaced")
+            result = self.remove_registration(state, "uninstall") if state else "none"
+            if state and result in ("removed", "already_invalid"):
+                self.sessions.invalidate(state, sign_in=True)  # conditional; never overwrites a newer sign-in
+        finally:
+            marker = digest(message["setup_token"])[:16]
+            self.store.mutate("deregistration", lambda _: {"result": result, "at": int(self.clock()), "for": marker})
+        return ACK
+
+    def enroll(self, user, message):
+        found = self.setup_challenge(user, message)
+        if not found:
+            return ACK
+        challenge, revision, key = found
+        token = message["setup_token"]
         config, config_revision = self.store.get("configuration")
         if config and config["owner_id"] != user:
             return ACK
@@ -148,6 +202,7 @@ class App:
                   "enrollment_id": digest(token),
                   "webhook_url": payload.get("webhook_url", ""),
                   "webhook_key": payload.get("webhook_key", "")}
+        previous, _ = self.store.get("retail-session")
         try:
             self.store.put("configuration", config, config_revision)
         except Conflict:
@@ -155,6 +210,8 @@ class App:
         self.ensure_seed(config)
         challenge["used"] = True
         self.store.put(key, challenge, revision)
+        if previous and previous.get("refresh_token") != seed["refresh_token"]:
+            self.remove_registration(previous, "replaced")  # a sign-in repair: the old device entry goes
         return ACK
 
     def ensure_seed(self, config):
@@ -182,6 +239,13 @@ class App:
             metadata_failure("job_status", error)
 
     def status(self, key):
+        reply = self.status_reply(key)
+        card = self.removal_card()
+        if card:
+            reply["response"]["card"] = {"type": "Simple", "title": say("card_title"), "content": json.dumps(card)}
+        return reply
+
+    def status_reply(self, key):
         state, _ = self.store.get("retail-session")
         guidance = auth_guidance(state)
         def explain(text):
@@ -261,6 +325,8 @@ class App:
                 return ACK
             if message.get("kind") == "setup":
                 return self.enroll(user, message)
+            if message.get("kind") == "deregister":
+                return self.deregister(user, message)
             if not config or config["owner_id"] != user:
                 return ACK
             self.ensure_seed(config)

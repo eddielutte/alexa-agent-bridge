@@ -25,7 +25,7 @@ class FakeAsk:
     def __init__(self, permission="ALLOWED", credentials_missing=True, configured=False):
         self.calls, self.utterances = [], []
         self.permission, self.credentials_missing, self.configured = permission, credentials_missing, configured
-        self.bodies = {}
+        self.bodies, self.deregistration = {}, None
 
     def __call__(self, args, **kwargs):
         self.calls.append(args)
@@ -59,6 +59,9 @@ class FakeAsk:
             if (utterance.startswith("open") and not self.configured) or "repair" in utterance:
                 card = {"type": "Simple", "content": json.dumps(
                     {"schema": 2, "skill_id": SKILL, "user_id": "USER", "setup_token": "FAKE-SETUP"})}
+            if "check cloud status" in utterance and self.deregistration:  # (result, request it answers)
+                card = {"type": "Simple", "content": json.dumps({"skill_id": SKILL, "deregistration":
+                        self.deregistration[0], "for": self.deregistration[1]})}
             text = ("Cloud authentication renewal succeeded." if "renew" in utterance else "Setup is saved.")
             reply = {"status": "SUCCESSFUL", "result": {"skillExecutionInfo": {"invocations": [
                 {"invocationResponse": {"body": {"response": {"outputSpeech": {"text": text},
@@ -725,6 +728,62 @@ class CliTests(unittest.TestCase):
         core.uninstall({"phases": {}}, True)
         self.assertNotIn("BRIDGE_WEBHOOK", self.out.getvalue())
         self.assertEqual(self.events()[-1]["event"], "uninstalled")
+
+    def installed(self):
+        state = self.chosen()
+        state.update(skill_id=SKILL)
+        state["phases"]["enrol"] = {}
+        return state
+
+    def test_uninstall_asks_the_skill_to_remove_its_device_entry_first(self):
+        state, ask, messages = self.installed(), FakeAsk(), []
+        request = core.hashlib.sha256(b"FAKE-SETUP").hexdigest()[:16]
+        def sender(method, url, headers, data, hosts, *rest):
+            if "auth/o2/token" in url:
+                return 200, b'{"access_token":"FAKE-TOKEN"}'
+            self.assertNotIn("delete-skill", [c[2] for c in ask.calls])  # removal comes before deletion
+            messages.append((url, json.loads(data)["data"]))
+            ask.deregistration = ("removed", request)  # the skill handles it and reports on the status card
+            return 202, b""
+        core.uninstall(state, True, runner=ask, sleep=lambda s: None, sender=sender)
+        self.assertEqual(messages, [("https://api.eu.amazonalexa.com/v1/skillmessages/users/USER",
+                                     {"kind": "deregister", "setup_token": "FAKE-SETUP"})])
+        self.assertIn("delete-skill", [c[2] for c in ask.calls])
+        event = self.events()[-1]
+        self.assertEqual((event["event"], event["device_entry"]), ("uninstalled", "removed"))
+        self.assertNotIn("couldn't be removed", event["next"])
+        self.assertNotIn("FAKE-SECRET", self.out.getvalue())
+
+    def test_an_old_or_odd_removal_result_isnt_taken_for_this_one(self):
+        for reported in (("removed", "0" * 16), ("everything", core.hashlib.sha256(b"FAKE-SETUP").hexdigest()[:16])):
+            ask = FakeAsk()
+            ask.deregistration = reported  # a result for another request, or an unknown value
+            sender = lambda method, url, *a: (200, b'{"access_token":"T"}') if "auth/o2/token" in url else (202, b"")
+            self.assertEqual(core.remove_device_entry(self.installed(), ask, lambda s: None, sender), "unknown")
+
+    def test_uninstall_still_finishes_when_the_device_entry_cant_be_removed(self):
+        state, ask = self.installed(), FakeAsk()
+        def offline(*args):
+            raise core.retail.TransportError("Connection failed; no retry")
+        core.uninstall(state, True, runner=ask, sleep=lambda s: None, sender=offline)
+        self.assertIn("delete-skill", [c[2] for c in ask.calls])  # the skill is still deleted
+        event = self.events()[-1]
+        self.assertEqual(event["device_entry"], "unknown")
+        self.assertIn("remove the one named like", event["next"])  # and the owner is told what to remove
+
+    def test_uninstall_removes_a_sign_in_not_yet_sent_to_the_skill_and_reports_nothing_installed(self):
+        core.uninstall({"phases": {}}, True)
+        self.assertEqual(self.events()[-1]["device_entry"], "none")  # nothing installed: nothing to remove
+        core.write_private("seed.json", {"schema": 1, "domain": "amazon.co.uk", "customer_id": "c",
+                                         "refresh_token": "FAKE-REFRESH", "cookies": {}, "devices": []})
+        calls = []
+        def amazon(method, url, headers=None, data=None, **kwargs):
+            calls.append(url)
+            return (200, [], b'{"access_token":"FAKE-access"}') if url.endswith("/auth/token") else (200, [], b"{}")
+        self.assertEqual(core.remove_device_entry({"phases": {}}, transport=amazon), "removed")
+        self.assertEqual(calls, ["https://api.amazon.com/auth/token", "https://api.amazon.com/auth/deregister"])
+        refused = lambda method, url, *a, **k: (200, [], b'{"access_token":"x"}') if "token" in url else (500, [], b"")
+        self.assertEqual(core.remove_device_entry({"phases": {}}, transport=refused), "refused")
 
     def test_registration_name_shows_the_skill_date_and_time(self):
         at = 1791625260  # 10 Oct 2026, 09:41 UTC

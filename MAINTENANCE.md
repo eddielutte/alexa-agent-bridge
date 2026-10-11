@@ -14,7 +14,7 @@ The owner hears this when Amazon has withdrawn the skill's sign-in. Their Echo l
    1. Run `python3 -m bridge signin start`, open its `signin_url` and hand control to the owner (your profile's **Browser handover**).
    2. When Amazon shows “Sorry, we couldn't find that page”, take control back and copy the address bar to the clipboard.
    3. Run `python3 -m bridge signin finish --from-clipboard`, or `--from-file` with a private file. If it stops with `signin_check_failed`, run `python3 -m bridge signin check` a minute later instead of signing in again.
-   4. Run `python3 -m bridge enrol`.
+   4. Run `python3 -m bridge enrol`. From v0.1.7, the skill then tries to remove the replaced sign-in's entry from the owner's Amazon devices list by itself.
 4. Run `python3 -m bridge test` and ask the owner to confirm they heard the test sentence.
 
 ## “Check the bridge”
@@ -32,10 +32,13 @@ The owner hears this when Amazon has withdrawn the skill's sign-in. Their Echo l
 ## “Remove the bridge”
 
 1. Confirm with the owner first; this cannot be undone.
-2. Run `python3 -m bridge uninstall --yes`. It deletes the skill and `~/.alexa-bridge`, including the bridge's own ASK CLI.
+2. Run `python3 -m bridge uninstall --yes`.
+   - It first tries to remove the bridge's own entries from the owner's Amazon devices list: the skill's current sign-in (only the skill holds it), and any sign-in made on your computer but not yet sent to the skill.
+   - Then it deletes the skill and `~/.alexa-bridge`, including the bridge's own ASK CLI.
+   - The `uninstalled` event's `device_entry` says how that went. `removed` or `none` means Amazon accepted every removal, or there was nothing to remove. Anything else means an entry may still be there, and `next` says which one the owner should remove.
 3. Remove the ASK CLI's developer sign-in: delete the `alexa-bridge` profile from `~/.ask/cli_config`, or delete `~/.ask` if nothing else on your computer uses ASK CLI.
 4. Delete your “Alexa bridge” routine, the `BRIDGE_WEBHOOK_URL` and `BRIDGE_WEBHOOK_KEY` secrets, and the saved maintenance skill. If you can't delete stored secrets, tell the owner; once the routine is deleted, they're no longer usable.
-5. Tell the owner they can remove the spare device entries the bridge's sign-ins left in their Amazon account. They're under Manage Content and Devices → Devices → Alexa, named like “<first name>'s <skill name> bridge (10 Oct 2026, 09:41 UTC)”, with the date and time of that sign-in. Entries from releases before v0.1.4 are named “<first name>'s AioAmazonDevices” (or “…2nd AioAmazonDevices”). Each sign-in that Amazon accepted made one, including any that were abandoned. Keep the newest entry for the skill: it's the one the skill uses now. Removing it stops answers being spoken until the owner signs in again.
+5. If `device_entry` wasn't `removed`, or older entries are left from earlier installs or abandoned sign-ins, tell the owner where they are: Manage Content and Devices → Devices → Alexa. They're named like “<first name>'s <skill name> bridge (10 Oct 2026, 09:41 UTC)”, with the date and time of that sign-in. Entries from releases before v0.1.4 are named “<first name>'s AioAmazonDevices” (or “…2nd AioAmazonDevices”). The bridge can only remove the entry for its current sign-in. While the bridge is installed, keep the newest entry for the skill: it's the one the skill uses now, and removing it stops answers being spoken until the owner signs in again.
 
 ## Answering questions through the routine
 

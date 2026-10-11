@@ -1,6 +1,7 @@
 """Small Python 3.8-compatible native speech adapter; no AudioPlayer.
-Protocol reference: aioamazondevices 16.3.1 (Apache-2.0); see NOTICE.
-Only refresh, identity/device discovery and one targeted speech POST are supported.
+Protocol reference: aioamazondevices 16.3.1 and, for deregistration, alexapy 1.31.0 (both Apache-2.0); see NOTICE.
+Only refresh, identity/device discovery, one targeted speech POST and removing the bridge's own device
+registration are supported.
 """
 import copy
 import html
@@ -160,7 +161,7 @@ def validate_session(session):
         raise RegistrationRejected("Invalid registration")
 
 
-def token_request(session, token_type, transport):
+def token_call(session, token_type, transport):
     form = {"app_name": "AioAmazonDevices", "app_version": "2.2.663733.0",
             "di.sdk.version": "6.12.4", "source_token": session["refresh_token"],
             "package_name": "com.amazon.echo", "di.hw.version": "iPhone",
@@ -172,12 +173,59 @@ def token_request(session, token_type, transport):
         "POST", "https://api.amazon.com/auth/token",
         {"User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded"},
         urllib.parse.urlencode(form).encode())
+    return status, body
+
+
+def token_request(session, token_type, transport):
+    status, body = token_call(session, token_type, transport)
     if status != 200:
         if status in (400, 401, 403):
             # Retain saved registration; classification does not erase it.
             raise RegistrationRejected("Registration needs interactive attention")
         raise TransportError("Amazon renewal temporarily failed")
     return json_body(body)
+
+
+TERMINAL_TOKEN_ERRORS = ("invalid_grant", "invalid_token", "unauthorized_client")
+
+
+def token_error(body):
+    """The OAuth error code in a refused token reply, lower-cased, or ""."""
+    try:
+        reply = json.loads(body)
+    except (ValueError, TypeError, UnicodeError):
+        return ""
+    if not isinstance(reply, dict):
+        return ""
+    error = reply.get("error")
+    if isinstance(error, dict):
+        error = error.get("code")
+    nested = (reply.get("response") or {}).get("error") if isinstance(reply.get("response"), dict) else None
+    if not error and isinstance(nested, dict):
+        error = nested.get("code")
+    return error.lower() if isinstance(error, str) else ""
+
+
+def deregister(session, transport=request):
+    """Ask Amazon to remove this registration's device entry from the owner's devices list, as alexapy's
+    async_deregister does (Apache-2.0; see NOTICE). Returns "removed" (Amazon replied 200), "refused" or
+    "already_invalid" (Amazon refuses the sign-in itself, so it can't ask; the entry may remain). Raises
+    TransportError when it can't tell. Whether 200 always means the entry is gone is unverified."""
+    validate_session(session)
+    status, body = token_call(session, "access_token", transport)
+    if status != 200:
+        # Only the errors alexapy treats as final mean the sign-in is gone; anything else may be passing.
+        if status in (400, 401) and token_error(body) in TERMINAL_TOKEN_ERRORS:
+            return "already_invalid"
+        raise TransportError("No access token for deregistration")
+    token = json_body(body).get("access_token")
+    if not isinstance(token, str) or not token or any(c in token for c in "\r\n"):
+        raise TransportError("No access token for deregistration")
+    status, _, _ = transport(
+        "POST", "https://api.amazon.com/auth/deregister",
+        {"User-Agent": UA, "Content-Type": "application/json", "Authorization": "Bearer " + token},
+        json.dumps({"requested_deregister_type": "deregister_device"}).encode())
+    return "removed" if status == 200 else "refused"
 
 
 def renew(session, transport=request, now=None):
