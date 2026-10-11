@@ -39,4 +39,4 @@ The owner hears this when Amazon has withdrawn the skill's sign-in. Their Echo l
 
 ## Answering questions through the routine
 
-Your “Alexa bridge” routine handles each spoken request on its own, so you don't need this skill for that. If the owner reports wrong-Echo answers, ask them to say “Alexa, ask <name> to link this Echo” on the requesting Echo and give its exact name.
+Your “Alexa bridge” routine handles each spoken request on its own, so you don't need this skill for that. If the owner says the “Alexa request received” and “Alexa response sent” notes have stopped appearing in your conversation, save the standing rule from your profile's **Showing Alexa requests** section again. If the owner reports wrong-Echo answers, ask them to say “Alexa, ask <name> to link this Echo” on the requesting Echo and give its exact name.

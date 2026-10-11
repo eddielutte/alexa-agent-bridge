@@ -233,6 +233,14 @@ class VerifyReleaseTests(unittest.TestCase):
         saved = json.loads((Path(self.tmp.name) / "state.json").read_text())
         self.assertEqual(saved["release"]["tag"], "v9.9.9")
 
+    def test_verify_without_a_tag_checks_the_release_at_head(self):
+        state = {"phases": {}}
+        self.stop("release_not_checked_out", core.verify_install, state, None, self.runner())  # not at a tag
+        self.stop("release_not_checked_out", core.verify_install, state, None, self.runner(described="main"))
+        core.verify_install(state, None, self.runner(described="v9.9.9"))
+        self.assertEqual(state["release"], {"tag": "v9.9.9", "commit": self.COMMIT})
+        self.assertEqual(self.events()[-2]["event"], "release_verified")  # the same signature check as with --tag
+
     # bridge update
 
     def test_update_verifies_then_deploys_the_verified_commit_in_a_fresh_process(self):

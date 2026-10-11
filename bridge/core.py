@@ -557,7 +557,7 @@ def hand_over_dev_code(source=None, clipboard=None, sleep=time.sleep, wait=90):
 
 def dev_auth(state, profile=DEFAULT_PROFILE, runner=run, vendor=None, starter=start_dev_signin, clipboard=None,
              sleep=time.sleep, source=None):
-    ask = Ask(profile, runner)
+    ask, started = Ask(profile, runner), time.monotonic()
     def vendor_list():
         try:
             return ask.call("get-vendor-list").get("vendors", [])
@@ -623,7 +623,7 @@ def dev_auth(state, profile=DEFAULT_PROFILE, runner=run, vendor=None, starter=st
     if (home() / DEV_SIGNIN).exists():
         (home() / DEV_SIGNIN).unlink()
     state.update(profile=profile, vendor_id=vendor_id)
-    done(state, "dev_auth")
+    done(state, "dev_auth", seconds=int(time.monotonic() - started))
 
 
 def create(state, runner=run, sleep=time.sleep):
@@ -723,8 +723,10 @@ def hosted_git(ask, skill_id, runner=run):
     return repo, tmp, git
 
 
-def deploy(state, runner=run, sleep=time.sleep):
+def deploy(state, runner=run, sleep=time.sleep, clock=time.monotonic):
     need(state, "choices", "profile", "skill_id")
+    started = clock()
+    emit("deploy_started", note="Amazon builds the skill and its voice model; this usually takes 2 to 15 minutes")
     ask, choices, skill_id = Ask(state["profile"], runner), state["choices"], state["skill_id"]
     repo, tmp, git = hosted_git(ask, skill_id, runner)
     try:
@@ -758,7 +760,7 @@ def deploy(state, runner=run, sleep=time.sleep):
              .get("lastUpdateRequest", {}).get("status"), "model_build", sleep)
     ask.call("set-skill-enablement", "-s", skill_id, "-g", "development")
     state.pop("deploy_pending", None)
-    done(state, "deploy", invocation=choices["invocation"], locale=choices["locale"])
+    done(state, "deploy", invocation=choices["invocation"], locale=choices["locale"], seconds=int(clock() - started))
 
 
 def messaging_credentials(ask, skill_id, sleep=time.sleep):
@@ -1310,7 +1312,8 @@ def webhook_check(state, sender=messaging.send):
                   "no routine answers at that address; it may be an older or deleted one" if status in (404, 410) else
                   "the routine didn't accept it")
         raise Stop("webhook_unreachable", "The routine didn't accept a setup check at %s (HTTP %d, key length %d): %s. "
-                   "Have the owner store the current routine's URL and key again, then run this step again."
+                   "If you haven't created this install's routine yet, run `routine-text` and create it first. Then "
+                   "have the owner store the current routine's URL and key again, and run this step again."
                    % (host_hint(url), status, len(key), reason),
                    say="Your routine didn't accept the connection codes I have. Please copy both codes for the "
                        "routine again, replacing what's stored. Tell me when both are saved.",
@@ -1364,6 +1367,8 @@ def routine_text(state):
     hosts = sorted(messaging.MESSAGING_HOSTS)
     text = template.format(display_name=state["choices"]["display_name"], language=state["choices"]["locale"],
                            hosts=", ".join("`" + h + "`" for h in hosts), max_chars=4000, max_bytes=6000, expiry=120)
+    state["routine_text_at"] = int(time.time())  # setup asks for this install's routine before checking codes
+    save_state(state)
     print(text)
 
 
@@ -1426,7 +1431,7 @@ def setup(state, runner=run, sleep=time.sleep, clipboard=None):
             emit("setup_complete", say="You're all set. On each Echo you want to use, say: “Alexa, ask %s, please "
                  "tell me a short joke.” The first time, Alexa asks which Echo it is: say its name, and it answers "
                  "straight after." % choices["display_name"],
-                 next="Save the maintenance skill and give the owner the cheat sheet (SETUP.md step 6).")
+                 next="Save the maintenance skill and give the owner the cheat sheet (SETUP.md step 4).")
             return
         if step == "preflight":
             preflight(state, runner=runner)
@@ -1457,6 +1462,15 @@ def setup(state, runner=run, sleep=time.sleep, clipboard=None):
         elif step == "create":
             create(state, runner, sleep)
         elif step == "webhook":
+            if not state.get("routine_text_at"):  # codes left from an earlier install would otherwise skip this
+                raise Stop("routine_needed", "Create this install's routine first: run `python3 -m bridge "
+                           "routine-text` and make the routine from it exactly (if you already have, running "
+                           "routine-text again is enough). Then have the owner store its URL and key, even if older "
+                           "ones are already stored, and run setup again.",
+                           do="run python3 -m bridge routine-text, create the routine (see your profile's Connecting "
+                              "the routine), give the owner its two codes, then run python3 -m bridge setup",
+                           say="I'm making the routine that will answer your questions. It has two connection codes "
+                               "that only you can copy; I'll show you where in a moment.")
             webhook_check(state)
         elif step in ("deploy", "enrol"):
             (deploy if step == "deploy" else enrol)(state, runner, sleep)
@@ -1531,8 +1545,24 @@ def _checkout_matches(sha, runner):
             and changed.returncode == 0 and not changed.stdout.strip())
 
 
-def verify_install(state, tag, runner=run):
-    """`bridge verify`: check the tag, check that this checkout IS that release, and record it as installed."""
+def head_release_tag(runner=run):
+    """The release tag at this checkout's HEAD (`v1.2.3`), or "" if there isn't exactly one name for it."""
+    described = _git(runner, "describe", "--tags", "--exact-match", "--match", "v*", "HEAD")
+    tag = described.stdout.strip() if described.returncode == 0 else ""
+    return tag if RELEASE_TAG.fullmatch(tag) else ""
+
+
+def verify_install(state, tag=None, runner=run):
+    """`bridge verify`: check the tag, check that this checkout IS that release, and record it as installed.
+    Without a tag, the release tag at HEAD is checked: the signature and checkout checks are the same."""
+    if not tag:
+        try:
+            tag = head_release_tag(runner)
+        except sshsig.BadSignature:
+            tag = ""
+        if not tag:
+            raise Stop("release_not_checked_out", "This checkout isn't at a release tag. Run `git checkout -q "
+                       "--detach refs/tags/<tag>` for the release you want, then verify again (or pass --tag).")
     try:
         sha = verify_release(tag, runner)
         matches = _checkout_matches(sha, runner)
@@ -1555,9 +1585,8 @@ def _installed_release(state, runner):
                        "owner; nothing was deployed." % recorded["tag"])
         return recorded["tag"]
     # Older installs have no record: the tag on HEAD must itself be a verified release that matches HEAD.
-    described = _git(runner, "describe", "--tags", "--exact-match", "--match", "v*", "HEAD")
-    tag = described.stdout.strip() if described.returncode == 0 else ""
-    if not RELEASE_TAG.fullmatch(tag):
+    tag = head_release_tag(runner)
+    if not tag:
         raise Stop("release_baseline_unknown", "The installed release can't be identified. Run `python3 -m bridge verify "
                    "--tag <installed tag>` first; nothing was deployed.")
     try:

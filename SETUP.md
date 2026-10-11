@@ -44,6 +44,8 @@ git checkout -q --detach "refs/tags/$tag"
 python3 -m bridge verify --tag "$tag"
 ```
 
+A plain `git clone` works too, as long as you then check out `refs/tags/<tag>` as above: `verify` refuses any other checkout. Without `--tag`, it checks the release tag at the checkout's HEAD.
+
 `verify` needs no extra tools. It must report `release_verified` with signer `SHA256:jFE7AQS44EuMt6TVafQICt2UtpwoO9iQCFSQQ0q/j9k` (the fingerprint in the README and on the maintainer's GitHub account, https://api.github.com/users/eddielutte/ssh_signing_keys), then `release_installed`. That confirms the checkout is exactly that signed release and records it for updates. If it stops, or names a different signer, stop and tell the owner; don't run anything else from that checkout. Where `ssh-keygen` is installed, it also runs `git verify-tag`, and both must agree.
 
 ### 2. One message to the owner
@@ -85,7 +87,7 @@ After each stop, do what it says, then run `python3 -m bridge setup` again. The 
    - `developer_profile`: the owner must finish registering at developer.amazon.com, accepting the agreement and completing their profile. Hand control.
    - `choose_vendor`: the account belongs to several developer organisations. Offer their names as choices, then run `python3 -m bridge dev-auth --vendor <ID>`.
 4. **`captcha`: Amazon's one-time check before the first hosted skill.** Open the page, hand control so the owner can sign in and solve it, then run `setup`. Afterwards Amazon sends the browser to a local address that doesn't load; that's expected.
-5. **`webhook_missing`: the routine.**
+5. **`routine_needed` or `webhook_missing`: the routine.** `routine_needed` comes first in every install, even when codes from an earlier install are still stored.
    1. Run `python3 -m bridge routine-text`.
    2. Create a routine named “<Display name> Alexa bridge”, triggered by an authenticated webhook, using that text exactly (see your profile's **Connecting the routine** section).
    3. Have the owner put its URL and key into your secure secret store as `BRIDGE_WEBHOOK_URL` and `BRIDGE_WEBHOOK_KEY`, without either appearing in chat. If you have no secret store, the owner runs `python3 -m bridge webhook-set` in a terminal on your computer and types both into hidden prompts.
@@ -100,9 +102,10 @@ After each stop, do what it says, then run `python3 -m bridge setup` again. The 
 
 1. Tell the owner the `say` text from `setup_complete`: their first question on each Echo also links that Echo, so there's no separate linking step. They say **“Alexa, ask <Display name>, please tell me a short joke.”**, then the Echo's name when Alexa asks which Echo it is.
 2. Confirm that they heard the full answer. If you can see the routine's runs, check that one ran and its callback returned 202; `python3 -m bridge test --status` gives the skill's own record.
-3. Save the maintenance skill, [`skills/alexa-bridge-maintenance/SKILL.md`](skills/alexa-bridge-maintenance/SKILL.md): its `name` and `description`, and its body word for word. Don't write your own version; it points to [MAINTENANCE.md](MAINTENANCE.md) in this checkout, so it stays correct after updates. If an older “Alexa bridge maintenance” skill exists, replace it. See your profile's **Saving the maintenance instructions** section.
-4. Give the owner the [cheat sheet](CHEAT-SHEET.md), with their skill name filled in.
-5. Delete `<work>/redirect.txt` if it exists. Leave `~/.alexa-bridge/state.json`, which holds no secrets, for maintenance.
+3. Check that the owner saw the routine's “Alexa request received” and “Alexa response sent” notes for that question in their usual conversation with you. If your platform returns a routine's output to you rather than to the owner, set yourself a standing rule to pass those two notes on to the owner, word for word, after every run (see your profile's **Showing Alexa requests** section).
+4. Save the maintenance skill, [`skills/alexa-bridge-maintenance/SKILL.md`](skills/alexa-bridge-maintenance/SKILL.md): its `name` and `description`, and its body word for word. Don't write your own version; it points to [MAINTENANCE.md](MAINTENANCE.md) in this checkout, so it stays correct after updates. If an older “Alexa bridge maintenance” skill exists, replace it. See your profile's **Saving the maintenance instructions** section.
+5. Give the owner the [cheat sheet](CHEAT-SHEET.md), with their skill name filled in.
+6. Delete `<work>/redirect.txt` if it exists. Leave `~/.alexa-bridge/state.json`, which holds no secrets, for maintenance.
 
 ## When something goes wrong
 
@@ -121,7 +124,7 @@ After each stop, do what it says, then run `python3 -m bridge setup` again. The 
 | `signin_*` (others) | The Amazon sign-in didn't complete | Run `setup` again. If the message says the sign-in is no longer pending, or Amazon's page has expired, run `python3 -m bridge signin start` first |
 | `no_echoes` | The signed-in account lists no Echo | The owner sets one up in the Alexa app; then run `python3 -m bridge signin check` and `setup` |
 | `country_locked` | The skill already exists for another country | Changing country means removing the bridge (MAINTENANCE.md) and setting up again |
-| `webhook_missing`, `webhook_invalid` | The routine's URL or key isn't stored | Step 3, stop 5 |
+| `routine_needed`, `webhook_missing`, `webhook_invalid` | This install's routine hasn't been made yet, or its URL or key isn't stored | Step 3, stop 5 |
 | `webhook_unreachable` | The routine didn't accept the setup check: the codes are old, for a deleted routine, or the key is wrong | Have the owner paste the current routine's codes again, then run `setup`. Nothing has been sent to the skill |
 | `signin_refused` | Amazon refused the speech sign-in code, usually because it expired or came from an older sign-in page | Run `setup` for a fresh sign-in, and copy the address as soon as the dog page appears |
 | `developer_sign_in_starting` | ASK CLI's sign-in hasn't printed its page yet | Run `setup` again in a few seconds |

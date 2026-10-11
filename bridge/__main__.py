@@ -50,7 +50,7 @@ def main(argv=None):
     test.add_argument("--status", action="store_true")
     sub.add_parser("status", help="show progress and the next step")
     ver = sub.add_parser("verify", help="check a release tag's signature (built in; no ssh-keygen needed)")
-    ver.add_argument("--tag", required=True)
+    ver.add_argument("--tag", help="the release to check (default: the release tag at this checkout's HEAD)")
     up = sub.add_parser("update", help="deploy a newer signed release")
     which = up.add_mutually_exclusive_group(required=True)
     which.add_argument("--tag")
