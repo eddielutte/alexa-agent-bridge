@@ -16,6 +16,7 @@ The owner hears this when Amazon has withdrawn the skill's sign-in. Their Echo l
    3. Run `python3 -m bridge signin finish --from-clipboard`, or `--from-file` with a private file. If it stops with `signin_check_failed`, run `python3 -m bridge signin check` a minute later instead of signing in again.
    4. Run `python3 -m bridge enrol`. From v0.1.7, the skill then tries to remove the replaced sign-in's entry from the owner's Amazon devices list by itself.
 4. Run `python3 -m bridge test` and ask the owner to confirm they heard the test sentence.
+5. Close the sign-in page and sign the owner out of Amazon in your browser (your profile's **Browser handover**). Do the same after a new developer sign-in through `dev-auth`.
 
 ## “Check the bridge”
 

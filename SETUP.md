@@ -105,7 +105,7 @@ After each stop, do what it says, then run `python3 -m bridge setup` again. The 
 3. Check that the owner saw the routine's “Alexa request received” and “Alexa response sent” notes for that question in their usual conversation with you. If your platform returns a routine's output to you rather than to the owner, set yourself a standing rule to pass those two notes on to the owner, word for word, after every run (see your profile's **Showing Alexa requests** section).
 4. Save the maintenance skill, [`skills/alexa-bridge-maintenance/SKILL.md`](skills/alexa-bridge-maintenance/SKILL.md): its `name` and `description`, and its body word for word. Don't write your own version; it points to [MAINTENANCE.md](MAINTENANCE.md) in this checkout, so it stays correct after updates. If an older “Alexa bridge maintenance” skill exists, replace it. See your profile's **Saving the maintenance instructions** section.
 5. Give the owner the [cheat sheet](CHEAT-SHEET.md), with their skill name filled in.
-6. Delete `<work>/redirect.txt` if it exists. Leave `~/.alexa-bridge/state.json`, which holds no secrets, for maintenance.
+6. Tidy up. Close any sign-in pages still open in your browser, and sign the owner out of Amazon there (see your profile's **Browser handover** section): the bridge keeps its own sign-ins and doesn't need the browser's. Delete `<work>/redirect.txt` if it exists. Leave `~/.alexa-bridge/state.json`, which holds no secrets, for maintenance.
 
 ## When something goes wrong
 
