@@ -124,10 +124,18 @@ def save_state(state):
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
-def done(state, phase, **facts):
+def done(state, phase, next=None, **facts):
     state["phases"][phase] = {"at": int(time.time()), **facts}
     save_state(state)
-    emit("phase_done", phase=phase, **facts)
+    emit("phase_done", phase=phase, **facts, **({"next": next} if next else {}))
+
+
+# The agent's browser is shared with its other assistants and tools: tidy it once each page has done its job.
+CLOSE_TAB = ("Close the browser tab that held this sign-in now that its address has been used, keeping at least one "
+             "tab open so the browser stays open (SETUP.md step 3).")
+TIDY_BROWSER = ("No more browser steps are needed. Tidy your browser: close every tab you opened for the bridge, "
+                "leaving one blank tab, and sign the owner out of Amazon there with the plain Sign out "
+                "(SETUP.md step 4.6).")
 
 
 def need(state, *keys):
@@ -563,7 +571,7 @@ def dev_auth(state, profile=DEFAULT_PROFILE, runner=run, vendor=None, starter=st
             return ask.call("get-vendor-list").get("vendors", [])
         except Failed:
             return None
-    vendors = vendor_list()
+    vendors, handed = vendor_list(), False
     if vendors is None:
         waiting = _dev_signin_running() and bool(_dev_signin_record().get("url"))  # the agent has had the page
         if not starter(profile):
@@ -575,7 +583,6 @@ def dev_auth(state, profile=DEFAULT_PROFILE, runner=run, vendor=None, starter=st
             if _dev_signin_record().get("url"):
                 break
             sleep(1)
-        handed = False
         if waiting or source:  # only once the agent has had the page: no code can be for it before then
             handed = hand_over_dev_code(source, clipboard, sleep)  # e.g. no clipboard: says so, rather than looping
         elif not clipboard:
@@ -592,12 +599,12 @@ def dev_auth(state, profile=DEFAULT_PROFILE, runner=run, vendor=None, starter=st
         url = _dev_signin_record().get("url")
         if url:
             emit("dev_signin_url", url=url)
-            raise Stop("developer_sign_in", "Open the dev_signin_url above in your own browser and hand control "
-                       "to the owner. When Amazon shows a page whose address contains %s, copy the address bar "
-                       "to the clipboard and run this step again (or save it to a private file and run `dev-auth "
+            raise Stop("developer_sign_in", "Open the dev_signin_url above in a new tab of your own browser and hand "
+                       "control to the owner. When Amazon shows a page whose address contains %s, copy the address "
+                       "bar to the clipboard and run this step again (or save it to a private file and run `dev-auth "
                        "--from-file F`). The code in it expires within minutes." % NO_BROWSER_PAGE,
-                       do="open dev_signin_url, hand control (see your profile's Browser handover); afterwards "
-                          "copy the address bar to the clipboard and run python3 -m bridge setup",
+                       do="open dev_signin_url in a new tab, hand control (see your profile's Browser handover); "
+                          "afterwards copy the address bar to the clipboard and run python3 -m bridge setup",
                        say="Please sign in to the Amazon developer site on the page I've opened, with the same "
                            "Amazon account, and click Allow. Tell me as soon as it shows the code page.")
         if _dev_signin_record().get("stage") == "failed":
@@ -623,7 +630,7 @@ def dev_auth(state, profile=DEFAULT_PROFILE, runner=run, vendor=None, starter=st
     if (home() / DEV_SIGNIN).exists():
         (home() / DEV_SIGNIN).unlink()
     state.update(profile=profile, vendor_id=vendor_id)
-    done(state, "dev_auth", seconds=int(time.monotonic() - started))
+    done(state, "dev_auth", next=CLOSE_TAB if handed else None, seconds=int(time.monotonic() - started))
 
 
 def create(state, runner=run, sleep=time.sleep):
@@ -837,9 +844,10 @@ def signin_start(state, open_browser=False, now=None):
 
 
 def emit_signin_url(url):
-    emit("signin_url", url=url, next="Open this page and hand control to the owner. When it lands on /ap/maplanding, "
-         "copy the address bar to the clipboard straight away and run: setup (or signin finish --from-clipboard / "
-         "--from-file F). If the dog page is already showing, don't reopen this page: copy that address instead.")
+    emit("signin_url", url=url, next="Open this page in a new tab and hand control to the owner. When it lands on "
+         "/ap/maplanding, copy the address bar to the clipboard straight away and run: setup (or signin finish "
+         "--from-clipboard / --from-file F). If the dog page is already showing, don't reopen this page: copy that "
+         "address instead.")
 
 
 def signin_url(state, pkce):
@@ -1203,7 +1211,7 @@ def signin_check(state, transport=amazon, renew=retail.renew):
     if "deploy" in state["phases"] and echoes != state.get("echoes"):
         state["deploy_pending"] = "echo names"  # the voice model must learn the new list
     state["echoes"] = echoes
-    done(state, "signin", home_region=state.get("home_region"), echoes=echoes)
+    done(state, "signin", next=CLOSE_TAB, home_region=state.get("home_region"), echoes=echoes)
 
 
 # --- Enrolment, routine text and tests ---------------------------------------------------------
@@ -1252,7 +1260,7 @@ def enrol(state, runner=run, sleep=time.sleep, sender=messaging.send):
         raise Stop("renewal_failed", "Enrolment was sent, but the cloud could not renew the Amazon sign-in yet. "
                    "Wait a minute and run: bridge test --status. Once it no longer reports a sign-in problem, "
                    "run setup again.", do="wait a minute, run python3 -m bridge test --status, then setup")
-    done(state, "enrol", test_echo=test_echo)
+    done(state, "enrol", next=TIDY_BROWSER, test_echo=test_echo)
 
 
 def webhook_values():
@@ -1433,7 +1441,8 @@ def setup(state, runner=run, sleep=time.sleep, clipboard=None):
                  "straight after." % choices["display_name"],
                  next="Make sure the owner sees each request and answer in your conversation, setting a standing rule "
                       "if your platform returns the routine's notes to you (SETUP.md step 4.3). Then save the "
-                      "maintenance skill and give the owner the cheat sheet (SETUP.md step 4).")
+                      "maintenance skill, give the owner the cheat sheet, and check that your browser is tidy and "
+                      "signed out of Amazon (SETUP.md step 4).")
             return
         if step == "preflight":
             preflight(state, runner=runner)
@@ -1447,9 +1456,10 @@ def setup(state, runner=run, sleep=time.sleep, clipboard=None):
             doctor(state, network=True)
         elif step == "signin":
             signin_start(state)
-            raise Stop("signin_handover", "Open the signin_url above in your browser and hand control to the owner.",
-                       do="open signin_url, hand control (see your profile's Browser handover); afterwards copy "
-                          "the address bar to the clipboard and run python3 -m bridge setup",
+            raise Stop("signin_handover", "Open the signin_url above in a new tab of your browser and hand control "
+                       "to the owner.",
+                       do="open signin_url in a new tab, hand control (see your profile's Browser handover); "
+                          "afterwards copy the address bar to the clipboard and run python3 -m bridge setup",
                        say="Please sign in to Amazon on the page I've opened, with the account your Echos use. "
                            "When Amazon shows “Sorry, we couldn't find that page” with a dog, that means it "
                            "worked: tell me and I'll take over.")

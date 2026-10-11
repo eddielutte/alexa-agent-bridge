@@ -186,6 +186,7 @@ class CliTests(unittest.TestCase):
             core.dev_auth(self.state, runner=TwoVendors(), vendor="VENDOR-B")
         self.assertEqual(self.state["vendor_id"], "VENDOR-B")
         self.assertIn("dev_auth", self.state["phases"])
+        self.assertNotIn("next", self.events()[-1])  # already signed in: no page was opened, so no tab to close
 
     def test_doctor_keeps_the_agents_country_notes(self):
         self.chosen()
@@ -554,6 +555,7 @@ class CliTests(unittest.TestCase):
                 self.dev_record(stage="done")
             core.dev_auth(self.state, runner=Ask(), starter=starter, clipboard=lambda: result, sleep=driver_finishes)
         self.assertIn("dev_auth", self.state["phases"])
+        self.assertEqual(self.events()[-1]["next"], core.CLOSE_TAB)
         self.assertNotIn("ANFAKECODE123", self.out.getvalue())
         signed_in.clear()
         with self.assertRaises(core.Stop) as stop:
@@ -814,6 +816,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual((seed["domain"], seed["customer_id"], seed["locale"]), ("amazon.co.uk", "CUSTOMER", "en-GB"))
         self.assertEqual(state["echoes"], ["Kitchen Echo", "Office Echo"])
         self.assertIsNone(core.read_private("pkce.json"))
+        self.assertEqual(self.events()[-1]["next"], core.CLOSE_TAB)
         self.assertNoSecrets()
 
     def test_enrol_sends_to_the_country_region_and_deletes_the_seed(self):
@@ -833,6 +836,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["registration"]["refresh_token"], "FAKE-REFRESH")
         self.assertIsNone(core.read_private("seed.json"))
         self.assertIn("enrol", state["phases"])
+        self.assertEqual(self.events()[-1]["next"], core.TIDY_BROWSER)  # the last browser step is behind it
+        self.assertNotIn("next", state["phases"]["enrol"])
         self.assertNoSecrets()
 
     def test_enrol_requires_routine_secrets(self):
