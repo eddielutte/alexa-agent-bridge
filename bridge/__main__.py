@@ -28,6 +28,9 @@ def main(argv=None):
     auth = sub.add_parser("dev-auth", help="check the Amazon developer sign-in")
     auth.add_argument("--profile", default=core.DEFAULT_PROFILE)
     auth.add_argument("--vendor", help="developer organisation ID, when the account has several")
+    code_source = auth.add_mutually_exclusive_group()
+    code_source.add_argument("--from-file", help="a private file holding the address of Amazon's code page")
+    code_source.add_argument("--from-prompt", action="store_true", help="paste that address into a hidden prompt")
     sub.add_parser("create", help="create the Alexa-hosted skill")
     sub.add_parser("deploy", help="push code, build the voice model, enable testing")
     sign = sub.add_parser("signin", help="Amazon sign-in on Amazon's own page")
@@ -77,7 +80,8 @@ def main(argv=None):
         elif args.command == "doctor":
             core.doctor(state, network=args.network)
         elif args.command == "dev-auth":
-            core.dev_auth(state, args.profile, vendor=args.vendor)
+            core.dev_auth(state, args.profile, vendor=args.vendor,
+                          source="prompt" if args.from_prompt else args.from_file)
         elif args.command == "create":
             core.create(state)
         elif args.command == "deploy":

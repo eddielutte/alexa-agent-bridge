@@ -1,5 +1,7 @@
 This routine answers questions asked through the {display_name} Alexa skill. Each run receives a JSON body containing `request_id`, `message` and `reply`.
 
+If the body has `"setup_check": true` and no `message`, it is the setup tool checking that this routine is reachable. Do nothing else: don't answer, don't call any URL and don't report it, just finish.
+
 If your platform shows run output, such as a chat, show this header at the earliest point it allows and quote the received request verbatim:
 
 **Alexa request received**

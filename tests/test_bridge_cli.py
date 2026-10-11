@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -76,6 +77,10 @@ class CliTests(unittest.TestCase):
         redirect = contextlib.redirect_stdout(self.out)
         redirect.__enter__()
         self.addCleanup(redirect.__exit__, None, None, None)
+        self.real_discard = core.discard_stale
+        discard = patch.object(core, "discard_stale")  # never touch this computer's real clipboard
+        self.discarded = discard.start()
+        self.addCleanup(discard.stop)
         self.state = core.load_state()
 
     def events(self):
@@ -362,8 +367,8 @@ class CliTests(unittest.TestCase):
             with patch("shutil.which", side_effect=lambda name: "/usr/bin/xsel" if name == "xsel" else None):
                 self.assertEqual(core.read_clipboard(runner).strip(), "https://www.amazon.com/ap/maplanding?x=1")
             self.assertEqual(calls, [["xsel", "--clipboard", "--output"], ["xsel", "--clipboard", "--clear"]])
-            with patch("shutil.which", return_value=None):
-                with self.assertRaises(core.Stop) as stop:
+            with patch("shutil.which", return_value=None), patch.object(core, "_x11_clipboard", return_value=None):
+                with self.assertRaises(core.Stop) as stop:  # no tool and no X display to read
                     core.read_clipboard(runner)
         self.assertEqual(stop.exception.category, "clipboard_unavailable")
 
@@ -409,7 +414,8 @@ class CliTests(unittest.TestCase):
             return lambda state, *a, **k: (order.append(name), core.done(state, name))
         env = {"BRIDGE_WEBHOOK_URL": "https://example.test/hook", "BRIDGE_WEBHOOK_KEY": "FAKE-KEY"}
         with patch.multiple(core, dev_auth=step("dev_auth"), deploy=step("deploy"), enrol=step("enrol")), \
-                patch.object(core, "create", step("create")), patch.dict(os.environ, env):
+                patch.object(core, "create", step("create")), patch.dict(os.environ, env), \
+                patch.object(core, "webhook_probe", return_value=200):
             with self.assertRaises(core.Stop) as stop:
                 core.setup(state)
         self.assertEqual(order, ["dev_auth", "create", "deploy", "enrol"])
@@ -474,61 +480,239 @@ class CliTests(unittest.TestCase):
             self.assertFalse(core.developer_signed_out("alexa-bridge", answer(1, "getaddrinfo ENOTFOUND api.amazonalexa.com")))
             self.assertFalse(core.developer_signed_out("alexa-bridge", answer(0, "{}")))
 
-    def test_webhook_check_shows_only_host_and_length(self):
+    def test_webhook_check_shows_only_host_and_length_and_proves_the_routine_answers(self):
         state = self.chosen()
         with self.assertRaises(core.Stop) as stop:
             core.webhook_check(state)
         self.assertEqual(stop.exception.category, "webhook_missing")
         self.assertIn("connection codes", stop.exception.say)
+        posts = []
+        def routine(status):
+            def sender(method, url, headers, data, hosts, timeout):
+                posts.append((url, headers["Authorization"], json.loads(data), hosts, timeout))
+                return status, b""
+            return sender
         with patch.dict(os.environ, {"BRIDGE_WEBHOOK_URL": "https://example.test/hook", "BRIDGE_WEBHOOK_KEY": "FAKE-KEY"}):
-            core.webhook_check(state)
+            def offline(*args):
+                raise core.retail.TransportError("Connection failed; no retry")
+            messages = []
+            for sender, category in ((routine(404), "webhook_unreachable"), (routine(401), "webhook_unreachable"),
+                                     (offline, "webhook_check_failed")):  # a blip isn't blamed on the codes
+                with self.assertRaises(core.Stop) as stop:
+                    core.webhook_check(state, sender=sender)
+                self.assertEqual(stop.exception.category, category)
+                self.assertNotIn("webhook", state["phases"])
+                messages.append(stop.exception.message)
+            self.assertIn("deleted", messages[0])  # 404: no routine there
+            self.assertIn("address or key was refused", messages[1])  # 401: Grokbot's answer to both
+            core.webhook_check(state, sender=routine(200))
+        self.assertEqual(posts[-1], ("https://example.test/hook", "Bearer FAKE-KEY",
+                                     {"setup_check": True, "request_id": "setup-check"}, {"example.test"}, 15.0))
         self.assertEqual((state["phases"]["webhook"]["domain"], state["phases"]["webhook"]["key_length"]), ("example.test", 8))
         self.assertEqual(core.host_hint("https://secret-id.m.pipedream.net/x"), "pipedream.net")
+        self.assertIn('"setup_check": true', (core.ROOT / "routine-template.md").read_text(encoding="utf-8"))
         self.assertNoSecrets()
 
-    def test_dev_auth_starts_the_developer_sign_in_itself(self):
+    def dev_record(self, **record):
+        (Path(self.tmp.name) / core.DEV_SIGNIN).write_text(json.dumps({"pid": os.getpid(), "at": int(time.time()),
+                                                                          **record}))
+
+    def test_dev_auth_hands_the_sign_in_page_to_the_agent_then_the_code_to_ask_cli(self):
+        signed_in = []
+        class Ask(FakeAsk):
+            def __call__(self, args, **kwargs):
+                if args[1:3] == ["smapi", "get-vendor-list"] and not signed_in:
+                    return SimpleNamespace(returncode=1, stdout="", stderr="not signed in")
+                return super().__call__(args, **kwargs)
+        page = "https://www.amazon.com/ap/oa?client_id=amzn1.application-oa2-client.x&scope=alexa%3Aall"
+        started = []
+        def starter(profile):
+            started.append(profile)
+            self.dev_record(stage="waiting_for_owner", url=page)
+            return True
+        with patch.object(core, "ensure_vendor_in_profile"):
+            with self.assertRaises(core.Stop) as stop:  # nothing copied yet: open the page for the owner
+                core.dev_auth(self.state, runner=Ask(), starter=starter, clipboard=lambda: "", sleep=lambda s: None)
+            self.assertEqual((started, stop.exception.category), (["alexa-bridge"], "developer_sign_in"))
+            self.assertEqual(self.events()[-1], {"event": "dev_signin_url", "url": page})
+            self.assertIn("click Allow", stop.exception.say)
+            result = ("https://ask-cli-static-content.s3-us-west-2.amazonaws.com/html/ask-cli-no-browser.html"
+                      "?code=ANFAKECODE123&scope=alexa%3Aall")
+            def driver_finishes(seconds):  # the background sign-in reads the code and completes
+                self.assertEqual(core.read_private(core.DEV_CODE, consume=True), {"code": "ANFAKECODE123"})
+                signed_in.append(True)
+                self.dev_record(stage="done")
+            core.dev_auth(self.state, runner=Ask(), starter=starter, clipboard=lambda: result, sleep=driver_finishes)
+        self.assertIn("dev_auth", self.state["phases"])
+        self.assertNotIn("ANFAKECODE123", self.out.getvalue())
+        signed_in.clear()
+        with self.assertRaises(core.Stop) as stop:
+            core.dev_auth(self.state, runner=Ask(), starter=lambda p: False)
+        self.assertIn("ask configure --no-browser", stop.exception.message)
+
+    def test_a_handed_over_code_is_checked_however_ask_cli_ended(self):
+        """ASK CLI saves the sign-in before its other questions, so a run it ended early (no developer profile,
+        or a choice of organisation) still signs in; a refused code asks for a fresh sign-in, not a terminal."""
+        page = "https://www.amazon.com/ap/oa?x=1"
+        result = core.NO_BROWSER_HOST.join(("https://", "/html/ask-cli-no-browser.html?code=ANFAKECODE123"))
+        for saved, vendors, expected in ((True, [], "developer_profile"), (False, None, "developer_code_refused")):
+            signed_in = []
+            class Ask(FakeAsk):
+                def __call__(self, args, **kwargs):
+                    if args[1:3] == ["smapi", "get-vendor-list"]:
+                        if not signed_in:
+                            return SimpleNamespace(returncode=1, stdout="", stderr="not signed in")
+                        return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"vendors": vendors}))
+                    return super().__call__(args, **kwargs)
+            self.dev_record(stage="waiting_for_owner", url=page)
+            def driver_ends(seconds):
+                core.read_private(core.DEV_CODE, consume=True)
+                signed_in.extend([True] if saved else [])
+                self.dev_record(stage="failed")
+            with self.assertRaises(core.Stop) as stop:
+                core.dev_auth(self.state, runner=Ask(), starter=lambda p: True, clipboard=lambda: result,
+                              sleep=driver_ends)
+            self.assertEqual(stop.exception.category, expected)
+
+    def test_the_developer_code_can_come_from_a_file_and_a_missing_clipboard_is_reported(self):
         class SignedOut(FakeAsk):
             def __call__(self, args, **kwargs):
                 if args[1:3] == ["smapi", "get-vendor-list"]:
                     return SimpleNamespace(returncode=1, stdout="", stderr="not signed in")
                 return super().__call__(args, **kwargs)
-        started = []
-        with self.assertRaises(core.Stop) as stop:
-            core.dev_auth(self.state, runner=SignedOut(), starter=lambda p: started.append(p) or True)
-        self.assertEqual((started, stop.exception.category), (["alexa-bridge"], "developer_sign_in"))
-        self.assertIn("click Allow", stop.exception.say)
-        with self.assertRaises(core.Stop) as stop:
-            core.dev_auth(self.state, runner=SignedOut(), starter=lambda p: False)
-        self.assertIn("answer 'y'", stop.exception.message)
-        self.assertIsNone(stop.exception.say)
+        self.dev_record(stage="waiting_for_owner", url="https://www.amazon.com/ap/oa?x=1")
+        with patch.object(core, "read_clipboard", side_effect=core.Stop("clipboard_unavailable", "x")):
+            with self.assertRaises(core.Stop) as stop:  # the page was already handed over: say why, don't loop
+                core.dev_auth(self.state, runner=SignedOut(), starter=lambda p: True, sleep=lambda s: None)
+        self.assertEqual(stop.exception.category, "clipboard_unavailable")
+        saved = Path(self.tmp.name) / "code-page.txt"
+        saved.write_text(core.NO_BROWSER_HOST.join(("https://", "/html/ask-cli-no-browser.html?code=ANFROMFILE99")))
+        def driver_finishes(seconds):
+            self.assertEqual(core.read_private(core.DEV_CODE, consume=True), {"code": "ANFROMFILE99"})
+            self.dev_record(stage="done")
+        self.assertTrue(core.hand_over_dev_code(str(saved), sleep=driver_finishes))
+        self.assertFalse(saved.exists())
 
-    def test_ask_configure_questions_get_fixed_answers(self):
-        confirm = "\x1b[32m?\x1b[0m Do you confirm that you used the browser to sign in to Alexa Skills Kit Tools? (Y/n)"
+    def test_ask_configure_output_is_read_without_guessing_a_display(self):
         aws = "? Do you want to link your AWS account in order to host your Alexa skills? (Y/n)"
-        self.assertEqual(core.configure_reply("Listening on http://localhost...", set()), None)
-        self.assertEqual(core.configure_reply(confirm, set()), ("browser", "y"))
-        self.assertEqual(core.configure_reply(confirm, {"browser"}), None)
-        self.assertEqual(core.configure_reply(aws, {"browser"}), ("aws", "n"))
-        self.assertFalse(core.unknown_question("Switch to 'Login with Amazon' page and sign-in.\nListening on http://localhost"))
+        self.assertEqual(core.configure_reply(aws, set()), ("aws", "n"))
         self.assertTrue(core.unknown_question("\x1b[32m?\x1b[0m Choose the vendor ID for the skills you want to manage"))
+        redrawn = "\r\x1b[2K\x1b[32m?\x1b[0m Please enter the Authorization Code: \x1b[36mANFAKE\x1b[0m\n"
+        self.assertFalse(core.unknown_question(redrawn * 3 + aws))  # ASK CLI redraws its prompts (seen on Grokbot)
+        printed = "Paste the following url to your browser:\n    \x1b[36mhttps://www.amazon.com/ap/oa?Client_Id=X&s=1\x1b[0m\n"
+        self.assertEqual(core.configure_url(printed), "https://www.amazon.com/ap/oa?Client_Id=X&s=1")
+        self.assertIsNone(core.configure_url(printed[:60]))  # half a line
+        self.assertTrue(core.wants_code("\x1b[32m?\x1b[0m Please enter the Authorization Code: "))
+        page = "https://ask-cli-static-content.s3-us-west-2.amazonaws.com/html/ask-cli-no-browser.html"
+        self.assertEqual(core.dev_code(page + "?code=ANabc-123_x.y&scope=alexa%3Aall"), "ANabc-123_x.y")
+        for text in ("https://www.amazon.com/ap/maplanding?code=ANabc12345", page + "?code=a%20b%0Dc&x=1", page,
+                     "https://evil.example/html/ask-cli-no-browser.html?code=ANabc12345",
+                     "http://ask-cli-static-content.s3-us-west-2.amazonaws.com/html/ask-cli-no-browser.html?code=ANabc12345"):
+            self.assertIsNone(core.dev_code(text), text)
 
-    def test_the_browsers_display_wins_over_the_shells(self):
-        with patch.dict(os.environ, {"BRIDGE_DISPLAY": ":6", "DISPLAY": ":5"}):
-            self.assertEqual(core.browser_display(), ":6")
+    @unittest.skipUnless(hasattr(os, "fork"), "pseudo-terminals need a POSIX computer")
+    def test_the_developer_sign_in_driver_types_the_handed_over_code(self):
+        """A stand-in for ASK CLI 2.30.7 as seen on Grokbot: a warning, the page, the code prompt (redrawn once
+        answered), then a quiet network call of more than 3 s before the next question."""
+        fake = Path(self.tmp.name) / "ask"
+        fake.write_text(
+            "#!%s\nimport os, sys, time\nassert sys.argv[1:] == ['configure', '--no-browser', '--profile', 'p']\n"
+            "print('[Warn]: ASK CLI uses authorization code to fetch LWA tokens. Do not share the code.')\n"
+            "print('Paste the following url to your browser:\\n    https://www.amazon.com/ap/oa?x=1')\n"
+            "code = input('\\x1b[32m?\\x1b[0m Please enter the Authorization Code: ')\n"
+            "print('\\r\\x1b[2K\\x1b[32m?\\x1b[0m Please enter the Authorization Code: ' + code)\n"
+            "time.sleep(4)\n"
+            "if os.environ.get('FAKE_VENDORS') == '2':\n"
+            "    print('? Choose the vendor ID for the skills you want to manage\\n  1) Home\\n  2) Work')\n"
+            "    input('  Answer: ')\n"
+            "link = input('? Do you want to link your AWS account in order to host your Alexa skills? ')\n"
+            "sys.exit(0 if (code, link) == ('ANFAKECODE123', 'n') else 3)\n" % sys.executable)
+        fake.chmod(0o700)
+        import threading
+        for vendors, stage in (("1", "done"), ("2", "needs_terminal")):
+            with patch.dict(os.environ, {"FAKE_VENDORS": vendors}):
+                driver = threading.Thread(target=core.drive_configure, args=("p",),
+                                          kwargs={"limit": 40, "exe": str(fake)})
+                driver.start()
+                for _ in range(100):
+                    if core._dev_signin_record().get("url"):
+                        break
+                    time.sleep(0.1)
+                self.assertEqual(core._dev_signin_record()["url"], "https://www.amazon.com/ap/oa?x=1")
+                core.write_private(core.DEV_CODE, {"code": "ANFAKECODE123"})
+                driver.join(40)
+            self.assertEqual(core._dev_signin_record()["stage"], stage)
+            self.assertIsNone(core.read_private(core.DEV_CODE))
 
-    def test_clipboard_waits_for_the_sign_in_address_and_leaves_other_text(self):
-        reads = iter([("some other text", None), ("https://www.amazon.com/ap/maplanding?x=1", None)])
+    def test_clipboard_is_read_on_every_display_until_the_address_is_found(self):
+        with patch.dict(os.environ, {"BRIDGE_DISPLAY": ":6", "DISPLAY": ":5"}), patch("pathlib.Path.is_dir", return_value=False):
+            self.assertEqual(core.browser_displays(), [":6", ":5"])
+        with patch.dict(os.environ, {}, clear=True), patch("pathlib.Path.is_dir", return_value=False):
+            self.assertEqual(core.browser_displays(), [None])
+        boards = {":6": "", ":7": "https://www.amazon.com/ap/maplanding?x=1", ":5": "something else"}
         cleared = []
-        def once(runner):
-            text, _ = next(reads)
-            return text, lambda: cleared.append(text)
+        def once(runner, display=None):
+            return boards[display], lambda: cleared.append(display)
+        with patch.object(core, "browser_displays", lambda: [":6", ":7", ":5"]), patch.object(core, "_clipboard_once", once):
+            text = core.read_clipboard(want=lambda t: "/ap/maplanding" in t, wait=0, sleep=lambda s: None)
+            self.assertEqual((text, cleared), (boards[":7"], [":7"]))
+            boards[":7"] = ""
+            self.assertEqual(core.read_clipboard(want=lambda t: "/ap/maplanding" in t, wait=0, sleep=lambda s: None), "")
+        self.assertEqual(cleared, [":7"])  # other copied text is never cleared
+        with patch.object(core, "browser_displays", lambda: [":6"]), patch.object(core, "_clipboard_once", lambda r, d=None: None):
+            with self.assertRaises(core.Stop) as stop:
+                core.read_clipboard()
+        self.assertEqual(stop.exception.category, "clipboard_unavailable")
+
+    def test_clipboard_waits_for_the_sign_in_address(self):
+        reads = iter(["some other text", "https://www.amazon.com/ap/maplanding?x=1"])
+        def once(runner, display=None):
+            return next(reads), lambda: None
         ticks = iter([0, 1, 2]).__next__
-        with patch.object(core, "_clipboard_once", once):
+        with patch.object(core, "browser_displays", lambda: [":5"]), patch.object(core, "_clipboard_once", once):
             text = core.read_clipboard(want=lambda t: "/ap/maplanding" in t, wait=30, sleep=lambda s: None, clock=ticks)
-        self.assertEqual((text, cleared), ("https://www.amazon.com/ap/maplanding?x=1", [text]))
-        with patch.object(core, "_clipboard_once", lambda runner: ("other", lambda: cleared.append("x"))):
-            self.assertEqual(core.read_clipboard(want=lambda t: False, wait=0, sleep=lambda s: None), "")
-        self.assertNotIn("x", cleared)
+        self.assertEqual(text, "https://www.amazon.com/ap/maplanding?x=1")
+
+    def test_a_pending_sign_in_is_reused_for_ten_minutes_and_old_addresses_are_cleared(self):
+        state = self.chosen()
+        core.signin_start(state, now=1000)
+        first = self.events()[-1]["url"]
+        core.signin_start(state, now=1000 + 599)
+        self.assertEqual(self.events()[-1]["url"], first)
+        self.assertEqual(self.discarded.call_count, 1)  # cleared for a new sign-in only, never a reused one
+        core.signin_start(state, now=1000 + 601)
+        self.assertNotEqual(self.events()[-1]["url"], first)
+        self.assertEqual(self.discarded.call_count, 2)
+        self.assertTrue(self.discarded.call_args[0][0]("https://www.amazon.com/ap/maplanding?x=1"))
+
+    def test_a_used_code_left_on_the_clipboard_is_cleared_not_handed_over(self):
+        """Seen on Grokbot: the code page's address from the day before was still on the clipboard. The first
+        run only shows the page and clears that; a code is taken only once the agent has had the page."""
+        class SignedOut(FakeAsk):
+            def __call__(self, args, **kwargs):
+                if args[1:3] == ["smapi", "get-vendor-list"]:
+                    return SimpleNamespace(returncode=1, stdout="", stderr="not signed in")
+                return super().__call__(args, **kwargs)
+        page = "https://www.amazon.com/ap/oa?x=1"
+        def starter(profile):
+            self.dev_record(stage="waiting_for_owner", url=page)
+            return True
+        with patch.object(core, "read_clipboard", side_effect=AssertionError("no code read on the first run")):
+            with self.assertRaises(core.Stop) as stop:
+                core.dev_auth(self.state, runner=SignedOut(), starter=starter, sleep=lambda s: None)
+        self.assertEqual(stop.exception.category, "developer_sign_in")
+        self.assertIs(self.discarded.call_args[0][0], core.dev_code)
+        self.assertIsNone(core.read_private(core.DEV_CODE))
+
+    def test_discarding_clears_only_a_matching_address(self):
+        cleared = []
+        boards = {":6": "https://www.amazon.com/ap/maplanding?old=1", ":5": "notes"}
+        with patch.object(core, "browser_displays", lambda: [":6", ":5"]), \
+                patch.object(core, "_clipboard_once", lambda r, d=None: (boards[d], lambda: cleared.append(d))):
+            self.real_discard(lambda t: "/ap/maplanding" in t)
+        self.assertEqual(cleared, [":6"])
+        with patch.object(core, "browser_displays", lambda: [":6"]), patch.object(core, "_clipboard_once", lambda r, d=None: None):
+            self.real_discard(core.dev_code)  # no clipboard here: best effort, no error
 
     def test_uninstall_event_names_no_secrets(self):
         core.uninstall({"phases": {}}, True)

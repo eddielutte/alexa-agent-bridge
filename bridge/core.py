@@ -83,9 +83,14 @@ def private_dir():
 
 
 def write_private(name, data):
+    """Owner-only from creation, and replaced in one step, so a reader never sees a partly written file."""
     path = private_dir() / name
-    path.write_text(json.dumps(data), encoding="utf-8")
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    temporary = path.with_name(path.name + ".tmp")
+    handle = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(handle, "w", encoding="utf-8") as out:
+        out.write(json.dumps(data))
+    os.chmod(temporary, stat.S_IRUSR | stat.S_IWUSR)
+    os.replace(str(temporary), str(path))
     return path
 
 
@@ -370,13 +375,41 @@ def doctor(state, fetch=probe, network=False, timer=network_timings):
     done(state, "doctor")
 
 
-DEV_SIGNIN, DEV_SIGNIN_LIMIT = "dev-signin.json", 900
+DEV_SIGNIN, DEV_SIGNIN_LIMIT, DEV_CODE = "dev-signin.json", 900, "dev-code.json"
 CONFIGURE_ANSWERS = (("browser", "used the browser to sign in", "y"), ("aws", "link your aws account", "n"),
                      ("overwrite", "overwrite", "y"))
+# `ask configure --no-browser` prints Amazon's sign-in page instead of opening a browser on a display it has to
+# guess; after "Allow", Amazon sends the browser to this page with the code in its address (ASK CLI 2.30.7).
+NO_BROWSER_PAGE, NO_BROWSER_HOST = "ask-cli-no-browser.html", "ask-cli-static-content.s3-us-west-2.amazonaws.com"
+CODE_PROMPT = "please enter the authorization code"
+
+
+def _unstyled(text):
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
 
 
 def _plain(text):
-    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text).lower()
+    return _unstyled(text).lower()
+
+
+def configure_url(text):
+    """The sign-in page `ask configure --no-browser` printed, once its whole line has arrived; else None."""
+    match = re.search(r"paste the following url to your browser:\s*(https://\S+)[ \t]*\r?\n", _unstyled(text), re.I)
+    return match.group(1) if match else None
+
+
+def wants_code(text):
+    return CODE_PROMPT in _plain(text)
+
+
+def dev_code(text):
+    """The authorisation code in the address of ASK CLI's own page after the developer sign-in, or None.
+    Any other page is refused, so a planted address can't sign ASK CLI in to another account."""
+    parts = urllib.parse.urlsplit((text or "").strip())
+    if parts.scheme != "https" or parts.hostname != NO_BROWSER_HOST or not parts.path.endswith("/" + NO_BROWSER_PAGE):
+        return None
+    code = urllib.parse.parse_qs(parts.query).get("code", [""])[0]
+    return code if re.fullmatch(r"[A-Za-z0-9_.\-]{8,512}", code) else None
 
 
 def configure_reply(text, answered):
@@ -388,36 +421,52 @@ def configure_reply(text, answered):
                 None)
 
 
+KNOWN_PROMPTS = (CODE_PROMPT,) + tuple(phrase for _, phrase, _ in CONFIGURE_ANSWERS)
+
+
 def unknown_question(text):
-    """A finished-looking question (a line starting '?') that configure_reply doesn't know, such as a choice of
-    developer organisation: those need the owner at a terminal."""
-    return any(line.strip().startswith("?") for line in _plain(text).splitlines())
+    """A question (a line starting '?') that this tool doesn't answer, such as a choice of developer
+    organisation: those need the owner at a terminal. ASK CLI redraws its prompts as they're typed and once
+    answered, sometimes before a quiet network call (seen on a real agent), so known prompts never count."""
+    lines = _plain(text).replace("\r", "\n").split("\n")
+    return any(line.strip().startswith("?") and not any(known in line for known in KNOWN_PROMPTS) for line in lines)
 
 
-def drive_configure(profile, limit=DEV_SIGNIN_LIMIT, quiet_for=3):
-    """`bridge _dev-signin`: run `ask configure` in a pseudo-terminal on the browser's display, answer its
-    questions, and record only its progress (never its output) in dev-signin.json. Runs detached."""
+def drive_configure(profile, limit=DEV_SIGNIN_LIMIT, quiet_for=3, exe=None):
+    """`bridge _dev-signin`: run `ask configure --no-browser` in a pseudo-terminal, record the sign-in page it
+    prints for the agent to open, type in the code that `dev-auth` hands over in a private file, and answer the
+    other questions. dev-signin.json records only progress and that page, never ASK CLI's other output."""
     import pty
     import select
     home().mkdir(parents=True, exist_ok=True)
     status = home() / DEV_SIGNIN
-    def note(stage):
-        status.write_text(json.dumps({"pid": os.getpid(), "stage": stage, "at": int(time.time())}))
-    exe, display = ask_exe(install=False), browser_display()
+    def note(stage, **extra):
+        status.write_text(json.dumps({"pid": os.getpid(), "stage": stage, "at": int(time.time()), **extra}))
+    drop_private(DEV_CODE)
+    exe = exe or ask_exe(install=False)
     if not exe:
         return note("failed")
-    note("waiting_for_owner")
+    note("starting")
     pid, fd = pty.fork()
     if pid == 0:
         try:
-            os.execvpe(exe, [exe, "configure", "--profile", profile], dict(os.environ, **({"DISPLAY": display}
-                                                                                         if display else {})))
+            os.execvp(exe, [exe, "configure", "--no-browser", "--profile", profile])
         finally:
             os._exit(127)
     seen, answered, end, last = "", set(), time.monotonic() + limit, time.monotonic()
-    stage = None
+    stage, url, typed = None, None, False
     while time.monotonic() < end:
         if not select.select([fd], [], [], 1)[0]:
+            if url and not typed and wants_code(seen):
+                try:
+                    code = (read_private(DEV_CODE, consume=True) or {}).get("code")
+                except (ValueError, AttributeError):
+                    code = None  # unreadable: dev-auth copies it again
+                if code:
+                    os.write(fd, (code + "\r").encode())
+                    typed, seen = True, ""
+                    note("finishing")
+                continue
             if seen and time.monotonic() - last >= quiet_for and unknown_question(seen):
                 stage = "needs_terminal"  # a question this tool doesn't answer, e.g. a choice of organisation
                 break
@@ -429,6 +478,9 @@ def drive_configure(profile, limit=DEV_SIGNIN_LIMIT, quiet_for=3):
         if not chunk:
             break
         seen, last = (seen + chunk)[-4000:], time.monotonic()
+        if not url and configure_url(seen):
+            url = configure_url(seen)
+            note("waiting_for_owner", url=url)
         reply = configure_reply(seen, answered)
         if reply:
             os.write(fd, (reply[1] + "\r").encode())
@@ -440,21 +492,24 @@ def drive_configure(profile, limit=DEV_SIGNIN_LIMIT, quiet_for=3):
     if stage:
         os.kill(pid, 15)
     _, code = os.waitpid(pid, 0)
+    drop_private(DEV_CODE)
     note(stage or ("done" if os.waitstatus_to_exitcode(code) == 0 else "failed"))
 
 
 def _dev_signin_record():
     try:
-        return json.loads((home() / DEV_SIGNIN).read_text(encoding="utf-8"))
+        record = json.loads((home() / DEV_SIGNIN).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return record if isinstance(record, dict) else {}
 
 
 def _dev_signin_running():
     record = _dev_signin_record()
     if record.get("stage") in (None, "done", "failed", "needs_terminal"):
         return False
-    if time.time() - record.get("at", 0) > DEV_SIGNIN_LIMIT + 60:  # stale, or a process ID reused after a restart
+    at = record.get("at", 0)
+    if not isinstance(at, (int, float)) or time.time() - at > DEV_SIGNIN_LIMIT + 60:  # stale, or a reused process ID
         return False
     try:
         os.kill(record["pid"], 0)
@@ -466,8 +521,10 @@ def _dev_signin_running():
 def start_dev_signin(profile):
     """Start the developer sign-in in the background, so a cut-off command doesn't end it. False if this
     computer can't (no pseudo-terminals, e.g. Windows) or ASK CLI asked something it can't answer: then a
-    terminal is needed."""
-    if os.name != "posix" or not ask_exe(install=False) or _dev_signin_record().get("stage") == "needs_terminal":
+    terminal is needed (for an hour, so a later run can try again)."""
+    record = _dev_signin_record()
+    asked = record.get("stage") == "needs_terminal" and time.time() - (record.get("at") or 0) < 3600
+    if os.name != "posix" or not ask_exe(install=False) or asked:
         return False
     if not _dev_signin_running():
         subprocess.Popen([sys.executable, "-B", "-m", "bridge", "_dev-signin", "--profile", profile], cwd=str(ROOT),
@@ -476,21 +533,79 @@ def start_dev_signin(profile):
     return True
 
 
-def dev_auth(state, profile=DEFAULT_PROFILE, runner=run, vendor=None, starter=start_dev_signin):
+def hand_over_dev_code(source=None, clipboard=None, sleep=time.sleep, wait=90):
+    """If the background developer sign-in is waiting for its code, take the code from the address of Amazon's
+    page after the sign-in (the clipboard, or `source` as in `signin finish`), hand it over and wait for ASK CLI
+    to finish. True if a code was handed over. ASK CLI saves the sign-in before anything else it asks, so the
+    caller checks the sign-in again however ASK CLI ended."""
+    if not _dev_signin_running() or not _dev_signin_record().get("url"):
+        return False
+    if source:
+        text = read_redirect(source)
+    else:
+        text = clipboard() if clipboard else read_clipboard(want=dev_code, wait=5)
+    code = dev_code(text or "")
+    if not code:
+        return False
+    write_private(DEV_CODE, {"code": code})
+    for _ in range(int(wait / 2)):
+        if _dev_signin_record().get("stage") in ("done", "failed", "needs_terminal"):
+            break
+        sleep(2)
+    return True
+
+
+def dev_auth(state, profile=DEFAULT_PROFILE, runner=run, vendor=None, starter=start_dev_signin, clipboard=None,
+             sleep=time.sleep, source=None):
     ask = Ask(profile, runner)
-    try:
-        vendors = ask.call("get-vendor-list").get("vendors", [])
-    except Failed:
-        if starter(profile):
-            raise Stop("developer_sign_in", "The Amazon developer sign-in has opened in your browser on display %s. "
-                       "Hand control to the owner; the tool answers ASK CLI's questions itself. When they're done, "
-                       "run this step again." % (browser_display() or "?"),
-                       do="hand control (see your profile's Browser handover), then run python3 -m bridge setup",
+    def vendor_list():
+        try:
+            return ask.call("get-vendor-list").get("vendors", [])
+        except Failed:
+            return None
+    vendors = vendor_list()
+    if vendors is None:
+        waiting = _dev_signin_running() and bool(_dev_signin_record().get("url"))  # the agent has had the page
+        if not starter(profile):
+            raise Stop("developer_sign_in", "Sign in to the Amazon developer account in a terminal: run `ask "
+                       "configure --no-browser --profile %s`, open the page it prints, have the owner sign in and "
+                       "click Allow, then paste the code= value from the address of the page Amazon shows next. "
+                       "Answer 'n' to linking an AWS account, then run this step again." % profile)
+        for _ in range(10):  # ASK CLI prints its page within a few seconds of starting
+            if _dev_signin_record().get("url"):
+                break
+            sleep(1)
+        handed = False
+        if waiting or source:  # only once the agent has had the page: no code can be for it before then
+            handed = hand_over_dev_code(source, clipboard, sleep)  # e.g. no clipboard: says so, rather than looping
+        elif not clipboard:
+            discard_stale(dev_code)  # an old, used code on the clipboard would otherwise pass for the new one
+        if handed:
+            vendors = vendor_list()
+            if vendors is None:
+                raise Stop("developer_code_refused", "ASK CLI didn't accept that code; it may have expired. Run "
+                           "this step again for a fresh sign-in page, and copy the code page's address straight away.",
+                           do="run python3 -m bridge setup, open the new dev_signin_url and hand control again",
+                           say="Amazon didn't accept that developer sign-in, usually because the code took too "
+                               "long. Could you sign in once more on the page I'm opening?")
+    if vendors is None:
+        url = _dev_signin_record().get("url")
+        if url:
+            emit("dev_signin_url", url=url)
+            raise Stop("developer_sign_in", "Open the dev_signin_url above in your own browser and hand control "
+                       "to the owner. When Amazon shows a page whose address contains %s, copy the address bar "
+                       "to the clipboard and run this step again (or save it to a private file and run `dev-auth "
+                       "--from-file F`). The code in it expires within minutes." % NO_BROWSER_PAGE,
+                       do="open dev_signin_url, hand control (see your profile's Browser handover); afterwards "
+                          "copy the address bar to the clipboard and run python3 -m bridge setup",
                        say="Please sign in to the Amazon developer site on the page I've opened, with the same "
-                           "Amazon account, and click Allow. Tell me when it says you can close the page.") from None
-        raise Stop("developer_sign_in", "Sign in to the Amazon developer account: run `ask configure --profile %s` "
-                   "in a terminal, complete the browser sign-in, answer 'y' to confirm you used the browser and "
-                   "'n' to linking an AWS account, then run this step again." % profile) from None
+                           "Amazon account, and click Allow. Tell me as soon as it shows the code page.")
+        if _dev_signin_record().get("stage") == "failed":
+            raise Stop("developer_sign_in_failed", "ASK CLI's sign-in ended without printing its page. Run "
+                       "`python3 -m bridge preflight`, then this step again. If it fails again, run `ask configure "
+                       "--no-browser --profile %s` in a terminal and report what it prints." % profile)
+        raise Stop("developer_sign_in_starting", "The developer sign-in is still starting. Run this step "
+                   "again in a few seconds.", do="wait ten seconds, then run python3 -m bridge setup")
     if not vendors:
         raise Stop("developer_profile", "This Amazon account has no Alexa developer profile yet. Finish registering at "
                    "https://developer.amazon.com/ (accept the agreement, complete the profile), then run this step again.")
@@ -700,10 +815,19 @@ def client_id(serial):
     return (serial + "#" + DEVICE_TYPE).encode().hex()
 
 
-def signin_start(state, open_browser=False):
+PENDING_SIGNIN_SECONDS = 600
+
+
+def signin_start(state, open_browser=False, now=None):
+    """Start the Amazon speech sign-in, or reuse one started in the last 10 minutes: a page already open for it
+    then stays valid. A new one each time made Amazon refuse codes from pages opened earlier (IKI-93)."""
     need(state, "choices")
-    pkce = {"serial": uuid.uuid4().hex.upper(), "verifier": b64(secrets.token_bytes(32))}
-    write_private("pkce.json", pkce)
+    now = time.time() if now is None else now
+    pkce = read_private("pkce.json") or {}
+    if not pkce.get("serial") or not 0 <= now - pkce.get("at", 0) < PENDING_SIGNIN_SECONDS:
+        pkce = {"serial": uuid.uuid4().hex.upper(), "verifier": b64(secrets.token_bytes(32)), "at": int(now)}
+        write_private("pkce.json", pkce)
+        discard_stale(lambda text: "/ap/maplanding" in text)  # an address left from an earlier, used sign-in
     url = signin_url(state, pkce)
     if open_browser:
         webbrowser.open(url)
@@ -712,7 +836,8 @@ def signin_start(state, open_browser=False):
 
 def emit_signin_url(url):
     emit("signin_url", url=url, next="Open this page and hand control to the owner. When it lands on /ap/maplanding, "
-         "copy the address bar to the clipboard and run: setup (or signin finish --from-clipboard / --from-file F)")
+         "copy the address bar to the clipboard straight away and run: setup (or signin finish --from-clipboard / "
+         "--from-file F). If the dog page is already showing, don't reopen this page: copy that address instead.")
 
 
 def signin_url(state, pkce):
@@ -739,8 +864,7 @@ CLIPBOARD_TOOLS = [(["xclip", "-o", "-selection", "clipboard"], ["xclip", "-i", 
                    (["pbpaste"], ["pbcopy"])]
 
 
-def _tk_clipboard():
-    display = browser_display()
+def _tk_clipboard(display):
     try:
         import tkinter
         root = tkinter.Tk(screenName=display)
@@ -769,29 +893,31 @@ def _tk_clipboard():
 BROWSERS = ("chrome", "chromium", "chromium-browse", "firefox", "firefox-esr")
 
 
-def browser_display():
-    """The X display the visible browser runs on, which can differ from this shell's; else $DISPLAY.
-    Read from the browser process's own environment (same user, Linux /proc). BRIDGE_DISPLAY overrides it."""
-    if os.environ.get("BRIDGE_DISPLAY"):
-        return os.environ["BRIDGE_DISPLAY"]
+def browser_displays():
+    """Every X display a copied address may be on, likeliest first: BRIDGE_DISPLAY, each running browser's own
+    display (read from /proc; one computer can run a browser per agent, each on its own display) and $DISPLAY.
+    Guessing one display failed on a real agent (IKI-93), so the clipboard is read on each in turn."""
+    found = [os.environ.get("BRIDGE_DISPLAY")]
     proc = Path("/proc")
-    for entry in sorted(proc.glob("[0-9]*")) if proc.is_dir() else []:
+    for entry in sorted(proc.glob("[0-9]*"), key=lambda p: int(p.name)) if proc.is_dir() else []:
         try:
-            if (entry / "comm").read_text().strip() not in BROWSERS:
-                continue
-            found = [v[8:] for v in (entry / "environ").read_bytes().split(b"\0") if v.startswith(b"DISPLAY=")]
-        except OSError:
+            if (entry / "comm").read_text().strip() in BROWSERS:
+                found += [v[8:].decode() for v in (entry / "environ").read_bytes().split(b"\0")
+                          if v.startswith(b"DISPLAY=")]
+        except (OSError, UnicodeError):
             continue
-        if found:
-            return found[0].decode()
-    return os.environ.get("DISPLAY")
+    found.append(os.environ.get("DISPLAY"))
+    unique = []
+    for display in found:
+        if display and display not in unique:
+            unique.append(display)
+    return unique or [None]
 
 
-def _x11():
+def _x11(display_name):
     """libX11 through ctypes, and an open display; None without either."""
     import ctypes
     import ctypes.util
-    display_name = browser_display()
     if not display_name:
         return None
     try:
@@ -821,9 +947,9 @@ def _x11():
     return ctypes, x, display, window
 
 
-def _x11_clipboard(timeout=3.0):
+def _x11_clipboard(display_name, timeout=3.0):
     """The X11 CLIPBOARD as UTF-8, read with the standard library only (no xclip). (text, clear) or None."""
-    opened = _x11()
+    opened = _x11(display_name)
     if not opened:
         return None
     ctypes, x, display, window = opened
@@ -865,7 +991,7 @@ def _x11_clipboard(timeout=3.0):
 
     def clear():  # owning the selection with a window that then closes leaves the clipboard empty
         try:
-            again = _x11()
+            again = _x11(display_name)
         except Exception:  # best effort: the address has already been read
             return
         if again:
@@ -877,12 +1003,11 @@ def _x11_clipboard(timeout=3.0):
     return text, clear
 
 
-def _clipboard_once(runner):
-    """(text, clear) from the first clipboard reader that works on this computer, or None if none does."""
-    got = _tk_clipboard()
+def _clipboard_once(runner, display=None):
+    """(text, clear) from the first clipboard reader that works on `display`, or None if none does."""
+    got = _tk_clipboard(display)
     if got:
         return got
-    display = browser_display()
     env = dict(os.environ, DISPLAY=display) if display else None
     for read, clear in CLIPBOARD_TOOLS:
         if shutil.which(read[0]):
@@ -897,7 +1022,7 @@ def _clipboard_once(runner):
                     except (OSError, subprocess.SubprocessError):
                         pass
                 return result.stdout, wipe
-    return _x11_clipboard()
+    return _x11_clipboard(display)
 
 
 def read_clipboard(runner=run, want=None, wait=0, sleep=time.sleep, clock=time.monotonic):
@@ -907,18 +1032,32 @@ def read_clipboard(runner=run, want=None, wait=0, sleep=time.sleep, clock=time.m
     works once and is used straight away."""
     end = clock() + wait
     while True:
-        got = _clipboard_once(runner)
-        if got is None:
+        readable = False
+        for display in browser_displays():
+            got = _clipboard_once(runner, display)
+            if got is None:
+                continue
+            readable, (text, clear) = True, got
+            if text.strip() and (want is None or want(text)):
+                clear()
+                return text
+        if not readable:
             raise Stop("clipboard_unavailable", "No clipboard could be read here (tkinter, xclip, xsel, wl-paste, "
                        "pbpaste or an X display). Save the address to a private file and use --from-file, or "
                        "--from-prompt. The sign-in is still pending.")
-        text, clear = got
-        if text.strip() and (want is None or want(text)):
-            clear()
-            return text
         if clock() >= end:
-            return text if want is None else ""
+            return ""
         sleep(2)
+
+
+def discard_stale(want, runner=run):
+    """Clear an earlier sign-in's address from any clipboard before a new sign-in page is shown. Its code has
+    been used or has expired, yet it looks just like the new one: on a real agent, an address left on the
+    clipboard from the day before was handed over and refused (IKI-93). Best effort."""
+    try:
+        read_clipboard(runner, want=want, wait=0)
+    except Stop:
+        pass
 
 
 def read_redirect(source, prompt=None, clipboard=None):
@@ -933,8 +1072,8 @@ def read_redirect(source, prompt=None, clipboard=None):
     try:
         return path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError):
-        raise Stop("signin_incomplete", "That file couldn't be read. Save the full /ap/maplanding address to a "
-                   "private file and run signin finish again; the sign-in is still pending.") from None
+        raise Stop("signin_incomplete", "That file couldn't be read. Save the full address to a private file and "
+                   "run the step again; the sign-in is still pending.") from None
     finally:
         if path.exists():
             path.unlink()
@@ -987,7 +1126,12 @@ def register(code, pkce, transport=amazon, name=None):
                    "if a spare \"… bridge (date, time)\" entry appears in the owner's Amazon devices list, they can "
                    "remove it.") from None
     if status != 200:
-        raise Stop("signin_refused", "Amazon did not accept that sign-in (HTTP %d). Start the sign-in again." % status)
+        raise Stop("signin_refused", "Amazon refused the sign-in code (HTTP %d). The code works once and expires "
+                   "within minutes, and only for the page it came from. Run setup again for a fresh sign-in, and "
+                   "copy the address as soon as the dog page appears." % status,
+                   do="run python3 -m bridge setup, open its new signin_url, and copy the address straight away",
+                   say="Amazon didn't accept that sign-in, usually because the code took too long to reach it. "
+                       "Could you sign in once more on the page I'm opening? I'll be quicker this time.")
     return retail.json_body(raw)["response"]["success"]
 
 
@@ -1133,9 +1277,45 @@ def host_hint(url):
     return ".".join((urllib.parse.urlsplit(url).hostname or "").split(".")[-2:])
 
 
-def webhook_check(state):
-    """Confirm the routine's URL and key are in place without revealing them: base domain and key length only."""
+WEBHOOK_PROBE_TIMEOUT = 15.0
+
+
+def webhook_probe(url, key, sender=messaging.send):
+    """POST a setup check that the routine ignores, as the skill would call it. The HTTP status, or None if the
+    routine's host couldn't be reached. Old codes kept after a reinstall, for a deleted routine, passed every
+    other check and the skill was connected to a routine that no longer answered (IKI-93). On a real agent,
+    the right key gave 200 and a wrong one 401 (11 October 2026)."""
+    body = json.dumps({"setup_check": True, "request_id": "setup-check"}).encode("utf-8")
+    try:
+        status, _ = sender("POST", url, {"Authorization": "Bearer " + key, "Content-Type": "application/json"}, body,
+                           {urllib.parse.urlsplit(url).hostname}, WEBHOOK_PROBE_TIMEOUT)
+    except (retail.TransportError, ValueError):
+        return None
+    return status
+
+
+def webhook_check(state, sender=messaging.send):
+    """Confirm the routine's URL and key are in place and that the routine answers, without revealing them:
+    base domain and key length only."""
     url, key = webhook_values()
+    status = webhook_probe(url, key, sender)
+    if status is None:
+        raise Stop("webhook_check_failed", "The routine's host (%s) couldn't be reached for a setup check. Check "
+                   "this computer's connection and run this step again; the stored codes may be fine." % host_hint(url),
+                   do="wait a minute, then run python3 -m bridge setup")
+    if not 200 <= status < 300:
+        # Grokbot answers 401 for a wrong key and for an address with no routine alike (11 October 2026).
+        reason = ("the address or key was refused: one of them is wrong, or they belong to an older or deleted "
+                  "routine" if status in (401, 403) else
+                  "no routine answers at that address; it may be an older or deleted one" if status in (404, 410) else
+                  "the routine didn't accept it")
+        raise Stop("webhook_unreachable", "The routine didn't accept a setup check at %s (HTTP %d, key length %d): %s. "
+                   "Have the owner store the current routine's URL and key again, then run this step again."
+                   % (host_hint(url), status, len(key), reason),
+                   say="Your routine didn't accept the connection codes I have. Please copy both codes for the "
+                       "routine again, replacing what's stored. Tell me when both are saved.",
+                   do="give the owner the routine's URL and key again (see your profile's Connecting the "
+                      "routine), then run python3 -m bridge setup")
     done(state, "webhook", domain=host_hint(url), key_length=len(key))
 
 
@@ -1273,7 +1453,7 @@ def setup(state, runner=run, sleep=time.sleep, clipboard=None):
         elif step == "test_echo":
             choose_test_echo(state)
         elif step == "dev_auth":
-            dev_auth(state, profile, runner=runner)
+            dev_auth(state, profile, runner=runner, clipboard=clipboard, sleep=sleep)
         elif step == "create":
             create(state, runner, sleep)
         elif step == "webhook":

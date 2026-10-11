@@ -11,7 +11,7 @@
 | Answering 3: runs unattended | Routine runs | No approval was asked for the callback to `amazonalexa.com` |
 | Answering 4–5: one callback, tokens kept private | Followed from the routine instructions | Proven |
 | Setup 1: shell | The bot's own computer: Debian Linux (x86-64) with Python 3, Node, npm, git and `libX11`. No root, no `ssh-keygen`, no tkinter and no clipboard tool | The bridge needs nothing more: it installs ASK CLI under `~/.alexa-bridge/tools` and reads the clipboard itself. Files survive between sessions. An Update, Recover or Reset of the computer removes installed packages; `bridge setup` reinstalls ASK CLI |
-| Setup 2: browser handover | The bot's Chrome with **take control** (one-to-one chats only), and a browser helper that works through the screen, mouse and keyboard | Chrome runs on its own X display (`:6` on 9 October 2026), not the shell's (`:5`); the bridge finds it from the Chrome process |
+| Setup 2: browser handover | The bot's Chrome with **take control** (one-to-one chats only), and a browser helper that works through the screen, mouse and keyboard | The bot's computer runs **one Chrome per assistant**, each on its own X display, and none of them on the shell's display. On 10 October 2026, the window you see and the display your helper copies on weren't even the same one. So the bridge never guesses a display: you open both sign-in pages yourself, and it reads the clipboard on every display. Don't set `BRIDGE_DISPLAY` |
 | Setup 3: secret store | **Secure secret cards** (“Stored securely, never shown to your Bot”), available to commands as environment variables | Proven. Grokbot can't delete them |
 | Setup 4: saved instructions | **Saved skills**, stored as `SKILL.md` files | Used for `alexa-bridge-maintenance`; the body is kept word for word |
 
@@ -40,15 +40,16 @@ Later, offer the test Echo, and any developer organisation, as choice cards too.
 
 Open the page in your Chrome and offer the owner **take control**. Wait until they say they're done, then take control back.
 
-- **The speech sign-in.** Amazon's last page says “Sorry, we couldn't find that page”, with a dog; tell the owner in advance that this means it worked. Your browser helper then copies the address bar: Ctrl+L, Ctrl+A, Ctrl+C in Chrome. Run `python3 -m bridge setup`. It reads the clipboard on Chrome's display with the standard library, so no clipboard tool is needed. Never paste the address into chat.
-- **The developer sign-in.** `bridge setup` starts `ask configure` itself on Chrome's display and answers its two questions, so the sign-in page opens in your Chrome. Hand control; the owner signs in and clicks **Allow**. When they say the page told them to close it, run `setup` again. An Update, Recover or Reset of your computer can remove this sign-in; `setup` then asks for it again.
+- **The speech sign-in.** Open the `signin_url` yourself. Amazon's last page says “Sorry, we couldn't find that page”, with a dog; tell the owner in advance that this means it worked. As soon as they hand back, your browser helper copies the address bar (Ctrl+L, Ctrl+A, Ctrl+C in Chrome). Then run `python3 -m bridge setup` straight away, because Amazon's code expires within minutes. The bridge reads the clipboard itself, on every display, so no clipboard tool is needed. Never paste the address into chat.
+- **The developer sign-in.** `bridge setup` starts ASK CLI's sign-in in the background and prints `dev_signin_url`. Open that page yourself, as for the speech sign-in, and hand control; the owner signs in and clicks **Allow**. Amazon then shows a page whose address contains `ask-cli-no-browser.html`. Copy that address bar straight away and run `setup`; the bridge hands the code to ASK CLI. Proven on 11 October 2026: the copied address was on one of the computer's four displays, and the bridge's reader found it there. An Update, Recover or Reset of your computer can remove this sign-in; `setup` then asks for it again.
 
 ### Connecting the routine
 
 1. Create the routine on yourself, named “<Display name> Alexa bridge”, with a **webhook trigger**, and paste the `routine-text` instructions exactly.
 2. You can't read the routine's webhook URL and key yourself. In **one message**, post the routine's two field links (Webhook URL, Webhook key) and two **secure secret cards** named `BRIDGE_WEBHOOK_URL` and `BRIDGE_WEBHOOK_KEY`. Say something like: “Two connection codes for the routine: click each link, copy, and paste into the matching card. I never see them.”
 3. The links and cards are the only route for the codes, so the owner doesn't need to look anywhere else in the app; if they ask, post the links again.
-4. Run `python3 -m bridge setup`. It confirms only the URL's base domain and the key's length.
+4. Run `python3 -m bridge setup`. It sends the routine a setup check and confirms only the URL's base domain and the key's length. In a proof of concept on 11 October 2026, the routine replied 200 to the right key and 401 to a wrong one, and the run did nothing visible.
+5. **Reinstalling:** you can't delete secret cards, so the cards from an earlier install are still there and still loaded. On 10 October 2026, setup accepted these old codes and connected the skill to a deleted routine. From v0.1.5 the setup check catches this (`webhook_unreachable`). On 11 October 2026, Grokbot answered 401 both for a wrong key and for a webhook address with no routine, so the check can't tell the two apart; a **deleted** routine's own address wasn't tried. Either way, after creating a new routine, always have the owner paste both codes again, replacing the old ones.
 
 ### Approval prompts
 
