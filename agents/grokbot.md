@@ -46,14 +46,24 @@ Open the page in your Chrome and offer the owner **take control**. Wait until th
 ### Connecting the routine
 
 1. Create the routine on yourself, named “<Display name> Alexa bridge”, with a **webhook trigger**, and paste the `routine-text` instructions exactly.
-2. You can't read the routine's webhook URL and key yourself. In **one message**, post the routine's two field links (Webhook URL, Webhook key) and two **secure secret cards** named `BRIDGE_WEBHOOK_URL` and `BRIDGE_WEBHOOK_KEY`. Say something like: “Two connection codes for the routine: click each link, copy, and paste into the matching card. I never see them.”
+2. You can't read the routine's webhook URL and key yourself. Post the routine's two field links (Webhook URL, Webhook key) with a short explanation, such as “Two connection codes for the routine: click each link, copy, and paste into the matching card. I never see them.” Then post the two **secure secret cards**, `BRIDGE_WEBHOOK_URL` and `BRIDGE_WEBHOOK_KEY`. A secret card ends your turn, so they come one after the other: the second when the first is saved (as on 11 October 2026).
 3. The links and cards are the only route for the codes, so the owner doesn't need to look anywhere else in the app; if they ask, post the links again.
 4. Run `python3 -m bridge setup`. It sends the routine a setup check and confirms only the URL's base domain and the key's length. In a proof of concept on 11 October 2026, the routine replied 200 to the right key and 401 to a wrong one, and the run did nothing visible.
 5. **Reinstalling:** you can't delete secret cards, so the cards from an earlier install are still there and still loaded. On 10 October 2026, setup accepted these old codes and connected the skill to a deleted routine. From v0.1.5 the setup check catches this (`webhook_unreachable`). On 11 October 2026, Grokbot answered 401 both for a wrong key and for a webhook address with no routine, so the check can't tell the two apart; a **deleted** routine's own address wasn't tried. Either way, after creating a new routine, always have the owner paste both codes again, replacing the old ones.
 
 ### Approval prompts
 
-In testing, no approval was asked for the routine's POST to an `amazonalexa.com` host. If your approval settings ever ask, ask the owner to choose **Always allow** for that host.
+Expect up to two approval prompts, and ask the owner to choose **Always allow** for each:
+- **The routine's answer callback** (“Send Alexa answer callback”), its POST to an `amazonalexa.com` host. On 11 October 2026 it was held once by Grokbot's safety check, on the second question, and needed this approval; earlier installs weren't asked. Without “Always allow”, an unattended answer can be held, and the Echo stays silent.
+- **The background helper** that copies a sign-in page's address (“Use the subagent tool to inspect local browser address bars”).
+
+### Showing Alexa requests
+
+A routine can't post into your chat with the owner. Each run's output, including its “Alexa request received” and “Alexa response sent” notes, comes back to you privately as a completion note. Earlier installs relayed these to the owner. On 11 October 2026, the notes weren't relayed, because nobody had asked about the runs, and the owner noticed they were missing. So, as part of the hand-over, save a standing rule to your memory:
+
+> Whenever a “<Display name> Alexa bridge” run finishes and its note contains “Alexa request received”, post its “Alexa request received” and “Alexa response sent” sections into the owner's chat straight away, word for word, with nothing added, even if nobody asked. If a run reports a failure instead, post that briefly. Never include tokens, keys or callback addresses.
+
+Confirm to the owner that the rule is saved. On 11 October 2026, Grokbot saved this rule and posted the two missed notes.
 
 ### Saving the maintenance instructions
 

@@ -18,6 +18,7 @@ Name the file `<agent>.md`, in lower case. Use these sections:
    - **Browser handover:** how the owner takes over the browser and hands it back.
    - **Connecting the routine:** creating the webhook-triggered routine and storing its URL and key as `BRIDGE_WEBHOOK_URL` and `BRIDGE_WEBHOOK_KEY`.
    - **Approval prompts:** whether the routine's callback needs approving, and how to allow it permanently.
+   - **Showing Alexa requests:** how the routine's “Alexa request received” and “Alexa response sent” notes reach the owner's conversation. Some platforms return a routine's output to the agent, which then has to pass it on.
    - **Saving the maintenance instructions:** how to save [MAINTENANCE.md](../MAINTENANCE.md) for later.
 4. **Known differences:** anything the owner should expect that other agents don't need.
 

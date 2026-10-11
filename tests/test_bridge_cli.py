@@ -416,6 +416,11 @@ class CliTests(unittest.TestCase):
         with patch.multiple(core, dev_auth=step("dev_auth"), deploy=step("deploy"), enrol=step("enrol")), \
                 patch.object(core, "create", step("create")), patch.dict(os.environ, env), \
                 patch.object(core, "webhook_probe", return_value=200):
+            with self.assertRaises(core.Stop) as stop:  # codes are stored, yet this install has no routine yet
+                core.setup(state)
+            self.assertEqual((stop.exception.category, order), ("routine_needed", ["dev_auth", "create"]))
+            self.assertIn("routine-text", stop.exception.do)
+            core.routine_text(state)
             with self.assertRaises(core.Stop) as stop:
                 core.setup(state)
         self.assertEqual(order, ["dev_auth", "create", "deploy", "enrol"])
@@ -424,6 +429,8 @@ class CliTests(unittest.TestCase):
         state["phases"]["test"] = {}
         core.setup(state)
         self.assertIn("Alexa, ask Nova AI, please tell me a short joke", self.events()[-1]["say"])
+        self.assertIn("SETUP.md step 4", self.events()[-1]["next"])  # the hand-over step
+        self.assertIn("step 4.3", self.events()[-1]["next"])  # requests and answers shown in the owner's chat
         self.assertNoSecrets()
 
     def test_the_test_echo_comes_from_the_signed_in_list(self):
