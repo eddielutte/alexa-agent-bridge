@@ -933,6 +933,7 @@ class CliTests(unittest.TestCase):
         core.announce(state, ["Office Echo"], "It's bedtime.", whisper=True, volume=30, runner=ask,
                       sleep=lambda s: None, sender=sender)
         self.assertEqual([m["kind"] for m in messages], ["announce_config", "announce"])
+        self.assertIn("announce_key_sent", [e["event"] for e in self.events()])  # the hand-over is visible
         said = messages[-1]
         self.assertEqual((said["targets"], said["text"], said["style"], said["whisper"], said["volume"]),
                          ('["Office Echo"]', "It's bedtime.", "announce", "1", "30"))
@@ -1018,6 +1019,38 @@ class CliTests(unittest.TestCase):
         core.announce_status(state, runner=ask, sleep=lambda s: None)
         self.assertEqual(self.events()[-1]["event"], "announce_status")
         self.assertNoSecrets()
+
+    def test_unreachable_or_uncertain_sends_stop_cleanly_and_are_never_resent(self):
+        state, ask = self.installed(), FakeAsk(configured=True)
+        skill, messages = self.skill(ask)
+        core.announce(state, ["Office Echo"], "Hi", runner=ask, sleep=lambda s: None, sender=skill)  # key in place
+        calls = []
+        def token_down(method, url, *rest):
+            calls.append(url)
+            raise core.retail.TransportError("Connection failed; no retry")
+        with self.assertRaises(core.Stop) as stop:
+            core.announce(state, ["Office Echo"], "Hi", runner=ask, sleep=lambda s: None, sender=token_down)
+        self.assertEqual((stop.exception.category, len(calls)), ("messaging_unreachable", 2))  # token tried twice
+        def send_down(method, url, *rest):
+            calls.append(url)
+            if "auth/o2/token" in url:
+                return 200, b'{"access_token":"FAKE-TOKEN"}'
+            raise core.retail.TransportError("Connection failed; no retry")
+        calls.clear()
+        with self.assertRaises(core.Stop) as stop:
+            core.announce(state, ["Office Echo"], "Hi", runner=ask, sleep=lambda s: None, sender=send_down)
+        self.assertEqual(stop.exception.category, "announce_unconfirmed")
+        self.assertEqual(sum("skillmessages" in u for u in calls), 1)  # the message itself: once only
+        with self.assertRaises(core.Stop) as stop:
+            core.announce_config(state, enabled=True, runner=ask, sleep=lambda s: None, sender=send_down)
+        self.assertEqual(stop.exception.category, "announce_config_unconfirmed")
+
+    def test_unexpected_errors_print_a_category_never_a_traceback(self):
+        from bridge.__main__ import main
+        with patch.object(core, "status", side_effect=KeyError("FAKE-SECRET")):
+            self.assertEqual(main(["status"]), 1)
+        self.assertEqual(self.events()[-1], {"event": "failed", "category": "unexpected_KeyError"})
+        self.assertNotIn("FAKE-SECRET", self.out.getvalue())
 
     def test_announce_needs_names_and_text_on_the_command_line(self):
         from bridge.__main__ import main

@@ -151,6 +151,9 @@ def main(argv=None):
     except core.Failed as failure:
         core.emit("failed", category=failure.category)
         return 1
+    except Exception as error:  # JSON lines only: a traceback could carry an address, a token or a message
+        core.emit("failed", category="unexpected_" + type(error).__name__)
+        return 1
     return 0
 
 

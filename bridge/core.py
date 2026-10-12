@@ -1431,12 +1431,33 @@ def quiet_now(state, now=None, zone=None):
     return start <= minute < end if start <= end else (minute >= start or minute < end)
 
 
-def send_to_skill(state, ask, data, user_id, sender, sleep):
-    """One Skill Messaging message to the owner's skill, with credentials held in memory only."""
+def setup_sender(method, url, headers, data, hosts, timeout=None):
+    """Skill Messaging calls from this computer get the setup tool's 20 s, not the hosted skill's 2 s: a slow
+    reply on the agent's computer crashed `announce-config` in the drill (IKI-103). Never retried here."""
+    return messaging.send(method, url, headers, data, hosts, SETUP_TIMEOUT)
+
+
+def send_to_skill(state, ask, data, user_id, sender, sleep, unconfirmed):
+    """One Skill Messaging message to the owner's skill, with credentials held in memory only. The token exchange
+    is retried once (nothing is sent by it); the message itself never is: `unconfirmed` is the Stop to raise."""
     client, secret = messaging_credentials(ask, state["skill_id"], sleep)
-    token = messaging.messaging_token({"client_id": client, "client_secret": secret}, sender)
-    messaging.send_message(user_id, token, data, sender, host=retail.messaging_host(state["choices"]["country"]))
-    del client, secret, token
+    try:
+        for attempt in (1, 2):
+            try:
+                token = messaging.messaging_token({"client_id": client, "client_secret": secret}, sender)
+                break
+            except retail.TransportError:
+                if attempt == 2:
+                    raise Stop("messaging_unreachable", "Amazon's messaging service couldn't be reached from this "
+                               "computer, so nothing was sent. Try again in a few minutes.") from None
+    finally:
+        del client, secret
+    try:
+        messaging.send_message(user_id, token, data, sender, host=retail.messaging_host(state["choices"]["country"]))
+    except retail.TransportError:
+        raise unconfirmed from None
+    finally:
+        del token
 
 
 def announce_settings(state, ask, sender, sleep, change, new_key=False):
@@ -1450,9 +1471,14 @@ def announce_settings(state, ask, sender, sleep, change, new_key=False):
     key = secrets.token_urlsafe(32) if new_key or not stored.get("key") else stored["key"]
     if new_key or not stored.get("key"):
         change = dict(change, key_hash=hashlib.sha256(key.encode("utf-8")).hexdigest())
+    unconfirmed = Stop("announce_config_unconfirmed", "The change may not have reached the skill. Run `python3 -m "
+                       "bridge announce --status` in a minute to see the current settings before trying again.")
     send_to_skill(state, ask, {"kind": "announce_config", "setup_token": card["setup_token"],
-                               "payload": json.dumps(change, separators=(",", ":"))}, card["user_id"], sender, sleep)
+                               "payload": json.dumps(change, separators=(",", ":"))}, card["user_id"], sender, sleep,
+                  unconfirmed)
     write_private(ANNOUNCE_FILE, {"key": key, "user_id": card["user_id"]})
+    if "key_hash" in change:
+        emit("announce_key_sent")  # never the key: only that the skill was given a new one
     del key
     for wait in ANNOUNCE_WAITS:
         sleep(wait)
@@ -1464,7 +1490,7 @@ def announce_settings(state, ask, sender, sleep, change, new_key=False):
 
 
 def announce_config(state, enabled=None, echoes=None, quiet=None, timezone=None, new_key=False, runner=run,
-                    sleep=time.sleep, sender=messaging.send):
+                    sleep=time.sleep, sender=setup_sender):
     need(state, "choices", "profile", "skill_id")
     if "enrol" not in state["phases"]:
         raise Stop("earlier_step_missing", "Finish setup first: announcements start working once the skill is enrolled.")
@@ -1497,7 +1523,7 @@ def announce_config(state, enabled=None, echoes=None, quiet=None, timezone=None,
 
 
 def announce(state, names, text, style="announce", volume=None, whisper=False, urgent=False, wait=True, runner=run,
-             sleep=time.sleep, sender=messaging.send, now=None):
+             sleep=time.sleep, sender=setup_sender, now=None):
     """Ask the skill to say `text` on the named Echos (or "all") with no spoken request. The skill checks the key,
     resolves the names exactly and leaves out Echos where it would be silent or that have Do Not Disturb on.
     Never resent: a message may have been spoken even when its outcome is unknown."""
@@ -1528,7 +1554,9 @@ def announce(state, names, text, style="announce", volume=None, whisper=False, u
             "targets": json.dumps(names), "text": text, "style": style, "whisper": "1" if whisper else "0",
             "volume": "" if volume is None else str(volume)}
     try:
-        send_to_skill(state, ask, data, stored["user_id"], sender, sleep)
+        send_to_skill(state, ask, data, stored["user_id"], sender, sleep, Stop(
+            "announce_unconfirmed", "The announcement may or may not have reached the skill. Don't send it again: "
+            "run `python3 -m bridge announce --status` in a minute."))
     except ValueError:
         raise Stop("announce_invalid", "The announcement is too long for Amazon's 6,000-byte message limit. Shorten "
                    "it by rewriting, not by cutting it off.") from None

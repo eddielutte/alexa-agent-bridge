@@ -79,9 +79,9 @@ You can say things on the owner's Echos when you judge it useful: MAINTENANCE.md
 
 - **Name your own computer in every task.** A task has no machine setting: each run decides where to run commands from its wording. On 12 October 2026, a task that said “your computer” ran its command on the owner's connected Windows PC instead (harmlessly: the bridge isn't there). Write: “Run this only on your own Linux computer, in `/workspace/alexa-bridge`, never on the owner's PC; if you can't, report it rather than running it elsewhere.” Worded that way, the next run used the right computer.
 - **One-off tasks delete themselves.** There's no one-off schedule; a single date in a 5-field cron comes back every year. End a one-off task with “then delete this task”.
-- **Schedules** can run as often as every 5 minutes.
+- **Schedules** can run as often as every 5 minutes, and may start late: in the v0.2.0 drill (12 October 2026) a task due at 12:05 ran at about 12:13. Don't schedule anything that has to be said at an exact minute.
 - **The email trigger** only fires for mail to your own inbox, not the owner's Outlook. For “an important email has arrived” announcements, the owner would forward the mail to you; agree that with them first.
-- **Approval:** an unattended `bridge status` wasn't held for approval on 12 October 2026. A command that makes an Echo speak may be judged differently; if it's held, the card expires unanswered and nothing is said. If the owner sees such a card, ask them to choose **Always allow**.
+- **Approval:** in the v0.2.0 drill (12 October 2026), unattended `bridge status` and `bridge announce` commands weren't held for approval, and no Custom Rule was needed. If one is ever held, the card expires unanswered and nothing is said; if the owner sees such a card, ask them to choose **Always allow**.
 - **Tell the owner** what you announced, with the `echoes` outcome, as you do for the “Alexa request received” notes. If a task's announcement fails, post that briefly.
 
 ### Saving the maintenance instructions

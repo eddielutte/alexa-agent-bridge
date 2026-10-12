@@ -59,6 +59,8 @@ Use this when you decide the owner should hear something now, with no request fr
    - `announce_throttled`: Amazon is limiting requests. Don't send it again now; space announcements out.
    - `announce_auth`: follow “Alexa says sign-in needs attention”.
    - `announce_pending`: the skill hasn't reported yet. Run `python3 -m bridge announce --status` in a minute.
+   - `announce_unconfirmed`: the message may or may not have reached the skill. Don't send it again; check `announce --status` in a minute.
+   - `messaging_unreachable`: Amazon couldn't be reached, so nothing was sent. Try again in a few minutes.
 3. **Never send the same announcement again** after an unclear result: it may already have been said.
 4. Tell the owner what you announced and where, the same way as the “Alexa request received” notes.
 
