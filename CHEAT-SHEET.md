@@ -19,4 +19,5 @@ Replace <name> with your skill's name, for example “Nova AI”.
 - Answers that are too long aren't cut off, so ask for a short answer (“in three sentences”).
 - An answer is never repeated automatically if delivery was uncertain. Check the status before asking again, especially for requests that make your bot do something.
 - Turn on **Adaptive Listening** for each Echo (Alexa app → Settings → Accessibility) to have more time to finish speaking.
+- **Announcements:** your agent can also say things on your Echos without being asked, such as a reminder or something important that has arrived. Do Not Disturb on an Echo keeps it quiet; with the chime style, the Echo's Communications setting must be on. Ask your agent to turn announcements off, limit them to some Echos, or set quiet hours.
 - If Alexa says sign-in needs attention, ask your agent to “run Alexa bridge maintenance”.

@@ -104,7 +104,7 @@ After each stop, do what it says, then run `python3 -m bridge setup` again. The 
 2. Confirm that they heard the full answer. If you can see the routine's runs, check that one ran and its callback returned 202; `python3 -m bridge test --status` gives the skill's own record.
 3. Check that the owner saw the routine's “Alexa request received” and “Alexa response sent” notes for that question in their usual conversation with you. If your platform returns a routine's output to you rather than to the owner, set yourself a standing rule to pass those two notes on to the owner, word for word, after every run (see your profile's **Showing Alexa requests** section).
 4. Save the maintenance skill, [`skills/alexa-bridge-maintenance/SKILL.md`](skills/alexa-bridge-maintenance/SKILL.md): its `name` and `description`, and its body word for word. Don't write your own version; it points to [MAINTENANCE.md](MAINTENANCE.md) in this checkout, so it stays correct after updates. If an older “Alexa bridge maintenance” skill exists, replace it. See your profile's **Saving the maintenance instructions** section.
-5. Give the owner the [cheat sheet](CHEAT-SHEET.md), with their skill name filled in.
+5. Give the owner the [cheat sheet](CHEAT-SHEET.md), with their skill name filled in. Tell them announcements are on: you can now say things on their Echos when you judge it useful (MAINTENANCE.md, “Announce”), Do Not Disturb on an Echo keeps it quiet, and you can turn announcements off, limit them to some Echos or set quiet hours whenever they ask. If your profile has an **Announcing** section, follow it.
 6. Tidy up, if you haven't already: enrolment's `phase_done` event prompts this, because no browser step comes after it.
    - Close every tab you opened for the bridge, including any Amazon pages you used to sign out or check, and leave one blank tab rather than closing the browser.
    - Sign the owner out of Amazon in your browser with the site's plain **Sign out**, never an option that signs out other devices, and check that the site then offers “Sign in”. The bridge keeps its own sign-ins and doesn't need the browser's; signing out was proven harmless on 11 October 2026. The owner's next sign-in there needs their password and code again.
@@ -147,6 +147,7 @@ After each stop, do what it says, then run `python3 -m bridge setup` again. The 
 | `update_refused` | The release couldn't be verified, isn't newer than the installed one, or the checkout has local changes | Nothing was deployed. Check the tag with the owner, and report any local changes rather than discarding them |
 | `confirm_uninstall` | Removal needs confirmation | Confirm with the owner, then add `--yes` |
 | `pack_unreadable` | A drafted language pack file is missing or isn't valid JSON | Fix the file named in the message |
+| `announce_*` | An announcement was refused, held or limited | See “Announce” in [MAINTENANCE.md](MAINTENANCE.md). Never send it again after an unclear result |
 | `earlier_step_missing` | A step was skipped | Run `python3 -m bridge setup` |
 | `failed` events (exit code 1) | An Amazon or git call failed | Run the same command again once. If it fails again, report the category to the owner |
 

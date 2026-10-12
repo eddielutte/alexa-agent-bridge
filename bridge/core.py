@@ -9,6 +9,7 @@ The Amazon sign-in and device registration follow the protocol used by aioamazon
 (Apache-2.0); see NOTICE.
 """
 import base64
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -1244,11 +1245,14 @@ def enrol(state, runner=run, sleep=time.sleep, sender=messaging.send):
         raise Failed("setup_card_unavailable")
     config = {"client_id": client, "client_secret": secret}
     token = messaging.messaging_token(config, sender)
-    payload = dict(config, registration=seed, webhook_url=url, webhook_key=key, test_device_name=test_echo)
+    announce_key = (read_private(ANNOUNCE_FILE) or {}).get("key") or secrets.token_urlsafe(32)
+    payload = dict(config, registration=seed, webhook_url=url, webhook_key=key, test_device_name=test_echo,
+                   announce_key_hash=hashlib.sha256(announce_key.encode("utf-8")).hexdigest())
     messaging.send_message(card["user_id"], token, {
         "kind": "setup", "setup_token": card["setup_token"],
         "payload": json.dumps(payload, separators=(",", ":"))}, sender, host=retail.messaging_host(choices["country"]))
-    del config, payload, token, secret
+    write_private(ANNOUNCE_FILE, {"key": announce_key, "user_id": card["user_id"]})  # announcements on by default
+    del config, payload, token, secret, announce_key
     sleep(8)
     status, _ = simulate(ask, state["skill_id"], choices["locale"], "ask %s to check cloud status" % invocation, sleep)
     renewed, _ = simulate(ask, state["skill_id"], choices["locale"], "ask %s to renew cloud authentication" % invocation, sleep)
@@ -1391,6 +1395,194 @@ def connection_test(state, runner=run, sleep=time.sleep, status_only=False):
                  choices.get("test_echo") or "your Echo", choices["display_name"]))
     if not status_only:
         done(state, "test", reply=speech)
+
+
+# --- Announcements: the agent speaks on chosen Echos with no spoken request ---------------------
+
+ANNOUNCE_FILE = "announce.json"  # the announcement key and the owner's Skill Messaging user; the skill keeps a hash
+ANNOUNCE_WAITS = (8, 5)  # the skill handles the message in its own invocation, as for enrolment
+QUIET = re.compile(r"([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)")
+
+
+def time_zone(name):
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise Stop("announce_timezone", "This computer doesn't know the time zone %r: the name is wrong (use an "
+                   "IANA name such as Europe/London with `announce-config --timezone`), or this computer has no "
+                   "time-zone database (`python3 -m pip install --user tzdata` adds one)." % name) from None
+
+
+def quiet_now(state, now=None, zone=None):
+    """True inside the owner's quiet hours, which are kept and checked here: the skill's Python has no time zones."""
+    settings = state.get("announce") or {}
+    match = QUIET.fullmatch(settings.get("quiet") or "")
+    if not match:
+        return False
+    country = retail.COUNTRIES[state["choices"]["country"]]
+    name = settings.get("timezone") or country.get("timezone")
+    if not name:
+        raise Stop("announce_timezone", "%s has more than one time zone, so quiet hours need one: run "
+                   "`announce-config --timezone <IANA name>`, e.g. America/New_York." % country["name"])
+    local = datetime.fromtimestamp(time.time() if now is None else now, (zone or time_zone)(name))
+    minute = local.hour * 60 + local.minute
+    start, end = int(match[1]) * 60 + int(match[2]), int(match[3]) * 60 + int(match[4])
+    return start <= minute < end if start <= end else (minute >= start or minute < end)
+
+
+def send_to_skill(state, ask, data, user_id, sender, sleep):
+    """One Skill Messaging message to the owner's skill, with credentials held in memory only."""
+    client, secret = messaging_credentials(ask, state["skill_id"], sleep)
+    token = messaging.messaging_token({"client_id": client, "client_secret": secret}, sender)
+    messaging.send_message(user_id, token, data, sender, host=retail.messaging_host(state["choices"]["country"]))
+    del client, secret, token
+
+
+def announce_settings(state, ask, sender, sleep, change, new_key=False):
+    """Change the skill's announcement settings with a one-use setup token, as enrolment does. With `new_key`, hand
+    over a fresh announcement key (an install from before announcements, or a lost key file). Returns the settings
+    the skill then reports."""
+    card = skill_card(ask, state, sleep)
+    if not card.get("setup_token") or not card.get("user_id"):
+        raise Failed("setup_card_unavailable")
+    stored = read_private(ANNOUNCE_FILE) or {}
+    key = secrets.token_urlsafe(32) if new_key or not stored.get("key") else stored["key"]
+    if new_key or not stored.get("key"):
+        change = dict(change, key_hash=hashlib.sha256(key.encode("utf-8")).hexdigest())
+    send_to_skill(state, ask, {"kind": "announce_config", "setup_token": card["setup_token"],
+                               "payload": json.dumps(change, separators=(",", ":"))}, card["user_id"], sender, sleep)
+    write_private(ANNOUNCE_FILE, {"key": key, "user_id": card["user_id"]})
+    del key
+    for wait in ANNOUNCE_WAITS:
+        sleep(wait)
+        settings = status_card(ask, state, sleep).get("announcements") or {}
+        if all(settings.get(k) == v for k, v in change.items() if k != "key_hash") and settings.get("key"):
+            return settings
+    raise Stop("announce_config_unconfirmed", "The change was sent, but the skill hasn't confirmed it yet. Run "
+               "`python3 -m bridge announce --status` in a minute to see the current settings.")
+
+
+def announce_config(state, enabled=None, echoes=None, quiet=None, timezone=None, new_key=False, runner=run,
+                    sleep=time.sleep, sender=messaging.send):
+    need(state, "choices", "profile", "skill_id")
+    if "enrol" not in state["phases"]:
+        raise Stop("earlier_step_missing", "Finish setup first: announcements start working once the skill is enrolled.")
+    local = dict(state.get("announce") or {})
+    if quiet is not None:
+        if quiet != "off" and not QUIET.fullmatch(quiet):
+            raise Stop("announce_quiet_invalid", "Give quiet hours as HH:MM-HH:MM in 24-hour time, e.g. 22:00-07:00, "
+                       "or off.")
+        local["quiet"] = None if quiet == "off" else quiet
+    if timezone is not None:
+        time_zone(timezone)
+        local["timezone"] = timezone
+    state["announce"] = local
+    if local.get("quiet"):
+        quiet_now(state)  # the time zone must be known before relying on it
+    save_state(state)
+    change = {}
+    if enabled is not None:
+        change["enabled"] = enabled
+    if echoes is not None:
+        names = [n.strip() for n in echoes.split(",") if n.strip()]
+        change["echoes"] = [] if [n.lower() for n in names] == ["all"] else names
+        if not 0 <= len(change["echoes"]) <= 20 or any(len(n) > 100 for n in change["echoes"]):
+            raise Stop("announce_echoes_invalid", "Name up to 20 Echos, separated by commas, or all.")
+    settings = None
+    if change or new_key:
+        settings = announce_settings(state, Ask(state["profile"], runner), sender, sleep, change, new_key)
+    emit("announce_config", quiet=local.get("quiet"), timezone=local.get("timezone"),
+         **({"skill": settings} if settings else {}))
+
+
+def announce(state, names, text, style="announce", volume=None, whisper=False, urgent=False, wait=True, runner=run,
+             sleep=time.sleep, sender=messaging.send, now=None):
+    """Ask the skill to say `text` on the named Echos (or "all") with no spoken request. The skill checks the key,
+    resolves the names exactly and leaves out Echos where it would be silent or that have Do Not Disturb on.
+    Never resent: a message may have been spoken even when its outcome is unknown."""
+    need(state, "choices", "profile", "skill_id")
+    if "enrol" not in state["phases"]:
+        raise Stop("earlier_step_missing", "Finish setup first: announcements start working once the skill is enrolled.")
+    try:
+        retail.check_text(text)
+    except ValueError:
+        raise Stop("announce_invalid", "Give the announcement as plain text: up to 4,000 characters, with no control "
+                   "characters.") from None
+    names = "all" if [n.lower() for n in names] == ["all"] else names
+    if not names or (names != "all" and (len(names) > 20 or any(not n.strip() or len(n) > 100 for n in names))):
+        raise Stop("announce_invalid", "Name 1–20 Echos with --to, as the owner's Alexa app shows them, or --to all.")
+    if volume is not None and not 0 <= volume <= 100:
+        raise Stop("announce_invalid", "Give --volume as 0–100.")
+    if not urgent and quiet_now(state, now):
+        raise Stop("announce_quiet_hours", "It's within the owner's quiet hours (%s), so nothing was sent. Send it "
+                   "later, or with --urgent only if it really can't wait; Do Not Disturb still applies."
+                   % state["announce"]["quiet"], do="hold the announcement until the quiet hours end")
+    ask = Ask(state["profile"], runner)
+    stored = read_private(ANNOUNCE_FILE) or {}
+    if not stored.get("key") or not stored.get("user_id"):
+        announce_settings(state, ask, sender, sleep, {}, new_key=True)  # an install from before announcements
+        stored = read_private(ANNOUNCE_FILE)
+    announce_id = uuid.uuid4().hex
+    data = {"kind": "announce", "announce_id": announce_id, "announce_key": stored["key"],
+            "targets": json.dumps(names), "text": text, "style": style, "whisper": "1" if whisper else "0",
+            "volume": "" if volume is None else str(volume)}
+    try:
+        send_to_skill(state, ask, data, stored["user_id"], sender, sleep)
+    except ValueError:
+        raise Stop("announce_invalid", "The announcement is too long for Amazon's 6,000-byte message limit. Shorten "
+                   "it by rewriting, not by cutting it off.") from None
+    finally:
+        del data, stored
+    emit("announce_queued", announce_id=announce_id, echoes=names, style=style)
+    if wait:
+        announce_result(state, ask, sleep, announce_id)
+
+
+def announce_status(state, runner=run, sleep=time.sleep):
+    need(state, "choices", "profile", "skill_id")
+    announce_result(state, Ask(state["profile"], runner), sleep)
+
+
+ANNOUNCE_STOPS = {
+    "off": ("announce_off", "The owner has turned announcements off (`announce-config --on` turns them back on, if "
+            "they ask)."),
+    "unknown_echo": ("announce_refused", "The skill refused it: an Echo name didn't match exactly one of the owner's "
+                     "Echos, or isn't one announcements may use. Nothing was said. Use the names exactly as the "
+                     "owner's Alexa app shows them."),
+    "invalid": ("announce_refused", "The skill refused the message as invalid. Nothing was said."),
+    "auth_required": ("announce_auth", "The skill's Amazon sign-in needs repair (MAINTENANCE.md, \"sign-in needs "
+                      "attention\"). Nothing was said."),
+}
+
+
+def announce_result(state, ask, sleep, announce_id=None):
+    """Read the skill's receipt for this announcement (or the latest) and report it for each Echo."""
+    for wait in (ANNOUNCE_WAITS if announce_id else (0,)):
+        sleep(wait)
+        card = status_card(ask, state, sleep)
+        receipt = card.get("announcement") or {}
+        if announce_id is None or (receipt.get("id") == announce_id and receipt.get("state") != "sending"):
+            break
+    else:
+        emit("announce_pending", announce_id=announce_id, next="The skill hasn't reported on it yet. Don't send it "
+             "again: run `python3 -m bridge announce --status` in a minute.")
+        return
+    if announce_id is None:
+        emit("announce_status", announcement=receipt or None, settings=card.get("announcements"))
+        return
+    outcome = receipt.get("state")
+    if outcome == "refused":
+        category, message = ANNOUNCE_STOPS.get(receipt.get("reason"), ANNOUNCE_STOPS["invalid"])
+        raise Stop(category, message)
+    if outcome == "auth_required":
+        raise Stop(*ANNOUNCE_STOPS["auth_required"])
+    if outcome == "throttled":
+        raise Stop("announce_throttled", "Amazon is limiting requests. It probably wasn't said; don't send it again "
+                   "now, and space announcements out.", do="wait several minutes before any other announcement")
+    emit("announced", announce_id=announce_id, outcome=outcome, echoes=receipt.get("echoes", {}),
+         next="Amazon accepted it; that doesn't prove it was heard. Echos marked do_not_disturb, offline or "
+              "announcements_off were left out. Never resend an announcement whose outcome is unconfirmed.")
 
 
 # The owner's part comes first, in one sitting: choices, both Amazon sign-ins, the test Echo and the routine's

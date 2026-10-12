@@ -48,6 +48,25 @@ def main(argv=None):
     sub.add_parser("webhook-check", help="confirm the routine's URL and key are stored (shows host and length only)")
     test = sub.add_parser("test", help="connection test (or --status) through the simulator")
     test.add_argument("--status", action="store_true")
+    say = sub.add_parser("announce", help="say something on the owner's Echos with no spoken request (or --status)")
+    say.add_argument("text", nargs="?", help="what to say, as plain text")
+    say.add_argument("--to", action="append", default=[], help='an Echo name as the Alexa app shows it, or "all"; '
+                     "repeat for several")
+    say.add_argument("--style", choices=["announce", "speak"], default="announce",
+                     help="announce: with a chime, as Alexa's own announcements; speak: no chime")
+    say.add_argument("--volume", type=int, help="0-100 for this message only; the earlier volume comes back after")
+    say.add_argument("--whisper", action="store_true")
+    say.add_argument("--urgent", action="store_true", help="send during the owner's quiet hours (never Do Not Disturb)")
+    say.add_argument("--no-wait", action="store_true", help="don't wait for the skill's report")
+    say.add_argument("--status", action="store_true", help="the latest announcement's outcome and the settings")
+    cfg = sub.add_parser("announce-config", help="turn announcements on or off, limit Echos, set quiet hours")
+    onoff = cfg.add_mutually_exclusive_group()
+    onoff.add_argument("--on", action="store_true")
+    onoff.add_argument("--off", action="store_true")
+    cfg.add_argument("--echos", help='Echo names separated by commas, or "all"')
+    cfg.add_argument("--quiet", help="quiet hours, e.g. 22:00-07:00, or off")
+    cfg.add_argument("--timezone", help="IANA time zone for quiet hours, e.g. Europe/London")
+    cfg.add_argument("--new-key", action="store_true", help="hand the skill a fresh announcement key")
     sub.add_parser("status", help="show progress and the next step")
     ver = sub.add_parser("verify", help="check a release tag's signature (built in; no ssh-keygen needed)")
     ver.add_argument("--tag", help="the release to check (default: the release tag at this checkout's HEAD)")
@@ -107,6 +126,16 @@ def main(argv=None):
             core.routine_text(state)
         elif args.command == "test":
             core.connection_test(state, status_only=args.status)
+        elif args.command == "announce" and args.status:
+            core.announce_status(state)
+        elif args.command == "announce":
+            if not (args.text and args.to):
+                parser.error('announce needs --to and the text, e.g. announce --to "Office Echo" "It\'s bedtime."')
+            core.announce(state, args.to, args.text, args.style, args.volume, args.whisper, args.urgent,
+                          wait=not args.no_wait)
+        elif args.command == "announce-config":
+            core.announce_config(state, enabled=True if args.on else False if args.off else None, echoes=args.echos,
+                                 quiet=args.quiet, timezone=args.timezone, new_key=args.new_key)
         elif args.command == "status":
             core.status(state)
         elif args.command == "verify":

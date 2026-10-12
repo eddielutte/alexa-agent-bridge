@@ -48,6 +48,15 @@ The setup agent follows [the setup guide](SETUP.md). It must have:
    - **Fallback:** the owner types both values into hidden prompts with `python3 -m bridge webhook-set`. This needs the owner to have a terminal on the agent's computer.
 4. **A way to save reusable instructions,** such as a saved skill or task, so the owner can later ask for “Alexa bridge maintenance” using [MAINTENANCE.md](MAINTENANCE.md).
 
+## Announcing (optional)
+
+The agent can also speak on the owner's Echos when it decides to, with no spoken request first: “It's bedtime”, “Have you put the bins out?”. It runs `python3 -m bridge announce` on its own computer (see MAINTENANCE.md, “Announce”). For that, it must be able to:
+
+1. **Run a shell command from an unattended task**, such as a scheduled or triggered task, on the computer that holds the bridge checkout and `~/.alexa-bridge`. If its platform can run commands on more than one computer, the task must name that one.
+2. **Report the outcome to the owner**, as it does for answered requests.
+
+Without this, setup and answering work as before; the agent can still announce while the owner is talking to it.
+
 ## What every agent must follow
 
 These come from the setup guide's ground rules and apply to every agent:

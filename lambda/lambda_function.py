@@ -15,6 +15,8 @@ from storage import Store, Sessions, Conflict, Busy, metadata_failure
 ACK = {"version": "1.0", "response": {}}
 PROOF_LIMIT = 20
 HELD_QUESTION_LIMIT = 1000
+ANNOUNCE_LIMIT = 20  # bounded announcement receipts
+ECHO_LIMIT = 20  # names in one announcement or in the owner's restriction
 
 
 def load_json(name):
@@ -93,6 +95,18 @@ def test_device_name(payload):
     return name if isinstance(name, str) and 0 < len(name) <= 100 else CONFIG["test_device_name"]
 
 
+def key_hash(value):
+    return value.lower() if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value) else None
+
+
+def echo_names(value):
+    """A list of 1–20 short Echo names, or None."""
+    if (not isinstance(value, list) or not 0 < len(value) <= ECHO_LIMIT
+            or not all(isinstance(n, str) and normal_name(n) and len(n) <= 100 for n in value)):
+        return None
+    return value
+
+
 def spoken_request(intent):
     value = intent.get("slots", {}).get("request", {}).get("value", "").strip()
     if not value:
@@ -104,10 +118,12 @@ def spoken_request(intent):
 
 class App:
     def __init__(self, store, sessions=None, clock=time.time, dispatch=messaging.dispatch,
-                 speaker=retail.speak_once, deregisterer=retail.deregister):
+                 speaker=retail.speak_once, deregisterer=retail.deregister, announcer=retail.announce_once,
+                 dnd=retail.dnd_states, allowed=retail.announcements_allowed, volumes=retail.device_volumes):
         self.store, self.clock = store, clock
         self.sessions = sessions or Sessions(store, clock)
         self.dispatch, self.speaker, self.deregisterer = dispatch, speaker, deregisterer
+        self.announcer, self.dnd, self.allowed, self.volumes = announcer, dnd, allowed, volumes
 
     def setup_card(self, user):
         token = secrets.token_urlsafe(24)
@@ -116,13 +132,23 @@ class App:
         return response(say("setup_ready"), card={"schema": 2, "skill_id": SKILL_ID, "user_id": user,
                                                   "setup_token": token, "country": CONFIG["country"]})
 
-    def removal_card(self):
-        """The last device-entry removal, tagged with the request it answers, for `bridge uninstall` to read back
-        through "check cloud status" (which, unlike the setup card, issues no new token)."""
+    def status_card(self):
+        """Read back through "check cloud status" (which, unlike the setup card, issues no new token): the last
+        device-entry removal, tagged with the request it answers, for `bridge uninstall`, and the latest
+        announcement receipt and settings, for `bridge announce --status` and `announce-config`."""
         removal, _ = self.store.get("deregistration")
-        if not removal:
-            return None
-        return {"skill_id": SKILL_ID, "deregistration": removal.get("result"), "for": removal.get("for")}
+        receipts, _ = self.store.get("announcements")
+        config, _ = self.store.get("configuration")
+        card = {}
+        if removal:
+            card.update(deregistration=removal.get("result"), **{"for": removal.get("for")})
+        if receipts and receipts.get("recent"):
+            card["announcement"] = receipts["recent"][-1]
+        settings = (config or {}).get("announce")
+        if settings:  # never the key's hash: whether one is set is enough
+            card["announcements"] = {"enabled": settings.get("enabled", True), "echoes": settings.get("echoes", []),
+                                     "key": bool(settings.get("key_hash"))}
+        return {"skill_id": SKILL_ID, **card} if card else None
 
     def setup_challenge(self, user, message):
         """The owner's unused, unexpired setup challenge matching the message's token: (challenge, revision, key)."""
@@ -196,12 +222,18 @@ class App:
                 return ACK
         except (KeyError, ValueError, TypeError, retail.AuthRequired):
             return ACK
+        announce = (config or {}).get("announce")  # a sign-in repair keeps the owner's announcement choices
+        if key_hash(payload.get("announce_key_hash")):
+            announce = {"enabled": True, "echoes": [], **(announce or {}),
+                        "key_hash": key_hash(payload["announce_key_hash"])}
         config = {"owner_id": user, "client_id": payload["client_id"],
                   "client_secret": payload["client_secret"], "seed": seed,
                   "test_device_name": test_device_name(payload), "setup_at": int(self.clock()),
                   "enrollment_id": digest(token),
                   "webhook_url": payload.get("webhook_url", ""),
                   "webhook_key": payload.get("webhook_key", "")}
+        if announce:
+            config["announce"] = announce
         previous, _ = self.store.get("retail-session")
         try:
             self.store.put("configuration", config, config_revision)
@@ -240,7 +272,7 @@ class App:
 
     def status(self, key):
         reply = self.status_reply(key)
-        card = self.removal_card()
+        card = self.status_card()
         if card:
             reply["response"]["card"] = {"type": "Simple", "title": say("card_title"), "content": json.dumps(card)}
         return reply
@@ -327,9 +359,13 @@ class App:
                 return self.enroll(user, message)
             if message.get("kind") == "deregister":
                 return self.deregister(user, message)
+            if message.get("kind") == "announce_config":
+                return self.announce_config(user, message)
             if not config or config["owner_id"] != user:
                 return ACK
             self.ensure_seed(config)
+            if message.get("kind") == "announce":
+                return self.announce(config, message)
             return self.answer(user, message)
         if config is None:
             return self.setup_card(user) if kind == "LaunchRequest" else response(say("open_to_set_up"))
@@ -601,6 +637,177 @@ class App:
             outcome = "unconfirmed"
         finally:
             self.finish_job(key, job_id, outcome)
+        return ACK
+
+    def announce_config(self, user, message):
+        """Turn announcements on or off, limit them to some Echos, or hand over the announcement key's hash. Takes
+        the same one-use, owner-bound setup token as enrolment."""
+        found = self.setup_challenge(user, message)
+        config, config_revision = self.store.get("configuration")
+        if not found or not config or config["owner_id"] != user:
+            return ACK
+        try:
+            change = json.loads(message["payload"])
+            if not isinstance(change, dict):
+                raise ValueError()
+        except (KeyError, ValueError, TypeError):
+            return ACK
+        announce = dict(config.get("announce") or {"enabled": True, "echoes": []})
+        if "key_hash" in change:
+            if not key_hash(change["key_hash"]):
+                return ACK
+            announce["key_hash"] = key_hash(change["key_hash"])
+        if "enabled" in change:
+            if not isinstance(change["enabled"], bool):
+                return ACK
+            announce["enabled"] = change["enabled"]
+        if "echoes" in change:
+            if change["echoes"] != [] and not echo_names(change["echoes"]):
+                return ACK
+            announce["echoes"] = change["echoes"]  # [] means every eligible Echo
+        challenge, revision, key = found
+        try:
+            self.store.put("configuration", {**config, "announce": announce}, config_revision)
+        except Conflict:
+            return ACK
+        challenge["used"] = True
+        self.store.put(key, challenge, revision)
+        return ACK
+
+    def announce(self, config, message):
+        """Speak the agent's own message on the named Echos, with no spoken request. The announcement key, not the
+        skill-wide messaging token, authorises it; names resolve exactly or the whole message is refused; Echos
+        with Do Not Disturb on (which Speak would ignore), or where an announcement would be silently dropped, are
+        left out; one POST, never replayed."""
+        settings = config.get("announce") or {}
+        announce_id, offered = message.get("announce_id"), message.get("announce_key")
+        if (not isinstance(announce_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", announce_id)
+                or not settings.get("key_hash") or not isinstance(offered, str) or len(offered) > 200
+                or not hmac.compare_digest(settings["key_hash"], digest(offered))):
+            print(json.dumps({"event": "hosted_announcement", "outcome": "refused", "category": "key"}))
+            return ACK
+        receipts, _ = self.store.get("announcements")
+        if any(r.get("id") == announce_id for r in (receipts or {}).get("recent", [])):
+            return ACK  # a redelivered message: decided once already
+        refuse = lambda reason: self.receipt(announce_id, "refused", reason=reason)
+        if not settings.get("enabled", True):
+            return refuse("off")
+        text, style = message.get("text"), message.get("style", "announce")
+        whisper, volume = message.get("whisper") == "1", message.get("volume", "")
+        try:
+            retail.check_text(text)
+            names = json.loads(message.get("targets", ""))
+            volume = None if volume == "" else int(volume)
+        except (ValueError, TypeError):
+            return refuse("invalid")
+        if (style not in ("announce", "speak") or not (names == "all" or echo_names(names))
+                or (volume is not None and not 0 <= volume <= 100)):
+            return refuse("invalid")
+        try:
+            session = self.sessions.ready(refresh_devices=True)
+        except retail.AuthRequired:
+            return refuse("auth_required")
+        allowed = [d for d in session.get("devices", [])
+                   if not settings.get("echoes")
+                   or normal_name(d["name"]) in {normal_name(n) for n in settings["echoes"]}]
+        if names == "all":
+            chosen = allowed
+        else:
+            chosen = []
+            for name in names:
+                matches = [d for d in allowed if normal_name(d["name"]) == normal_name(name)]
+                if len(matches) != 1:
+                    return refuse("unknown_echo")  # no fallback to another Echo
+                if matches[0] not in chosen:
+                    chosen.append(matches[0])
+        if not chosen:
+            return refuse("unknown_echo")
+        echoes = {d["name"]: "offline" for d in chosen if not d["online"]}
+        targets = [d for d in chosen if d["online"]]
+        try:
+            asleep = self.dnd(session)
+        except retail.TransportError:
+            asleep = None  # Speak would play through it, so unknown means not sent
+        for d in list(targets):
+            key = (d["serial"], d["type"])
+            if asleep is None and style == "speak":
+                echoes[d["name"]] = "do_not_disturb_unknown"
+            elif asleep and asleep.get(key):
+                echoes[d["name"]] = "do_not_disturb"
+            elif style == "announce" and self.allowed(session, d) is False:
+                echoes[d["name"]] = "announcements_off"
+            else:
+                continue
+            targets.remove(d)
+        levels = None
+        if targets and volume is not None:
+            try:
+                levels = self.volumes(session)
+            except retail.TransportError:
+                levels = {}  # the volume stays as it is: never set without a level to restore
+        if not targets:
+            return self.receipt(announce_id, "skipped", echoes=echoes)
+        try:
+            payload = retail.announcement_payload(session, targets, text, style=style, whisper=whisper,
+                                                  title=CONFIG["display_name"], volume=volume, volumes=levels)
+        except retail.TargetUnavailable:
+            raise retail.TransportError("Devices changed; let Amazon redeliver")  # unclaimed: safe to redeliver
+        except ValueError:
+            return refuse("invalid")
+        try:
+            self.receipt(announce_id, "sending", echoes=echoes, claim=True)
+        except DuplicateRequest:
+            return ACK
+        started, outcome = time.monotonic(), "unconfirmed"
+        try:
+            outcome = self.announcer(session, targets, text, style=style, whisper=whisper,
+                                     title=CONFIG["display_name"], volume=volume, volumes=levels)
+        except retail.AuthRequired:
+            outcome = "auth_required"
+            self.sessions.invalidate(session)
+        except retail.Throttled:
+            outcome = "throttled"
+        except retail.UnconfirmedSpeech:
+            outcome = "unconfirmed"
+        finally:
+            for d in targets:
+                echoes[d["name"]] = outcome
+            print(json.dumps({"event": "hosted_announcement", "outcome": outcome, "echoes": len(targets),
+                              "elapsed_ms": round((time.monotonic() - started) * 1000)}))
+            try:
+                self.receipt(announce_id, outcome, echoes=echoes, settle=True)
+            except (Busy, Conflict) as error:
+                metadata_failure("announcement_outcome", error)
+        return ACK
+
+    def receipt(self, announce_id, state, reason=None, echoes=None, claim=False, settle=False):
+        """Bounded receipts with no text: id, state, the outcome for each Echo, time. A claim fails if the id was
+        already recorded, so a redelivered message never speaks twice."""
+        row = {"id": announce_id, "state": state, "at": int(self.clock()), "echoes": echoes or {}}
+        if reason:
+            row["reason"] = reason
+        def record(current):
+            recent = (current or {}).get("recent", [])
+            mine = [r for r in recent if r.get("id") == announce_id]
+            if settle:
+                if not mine:
+                    raise Conflict()
+                mine[0].update(row)
+                return current
+            if mine:
+                raise DuplicateRequest()
+            return {"recent": (recent + [row])[-ANNOUNCE_LIMIT:]}
+        try:
+            self.store.mutate("announcements", record)
+        except DuplicateRequest:
+            if claim:
+                raise
+        except Busy as error:
+            if claim or settle:
+                raise
+            metadata_failure("announcement_receipt", error)
+        if not claim and not settle:
+            print(json.dumps({"event": "hosted_announcement", "outcome": state, "category": reason or ""}))
         return ACK
 
     def finish_job(self, key, job_id, outcome):

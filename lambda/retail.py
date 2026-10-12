@@ -1,7 +1,8 @@
 """Small Python 3.8-compatible native speech adapter; no AudioPlayer.
-Protocol reference: aioamazondevices 16.3.1 and, for deregistration, alexapy 1.31.0 (both Apache-2.0); see NOTICE.
-Only refresh, identity/device discovery, one targeted speech POST and removing the bridge's own device
-registration are supported.
+Protocol reference: aioamazondevices 16.3.1 (announcements, Do Not Disturb, volumes and communication preferences:
+16.5.0) and, for deregistration, alexapy 1.31.0 (all Apache-2.0); see NOTICE.
+Only refresh, identity/device discovery, device-state reads, one targeted speech or announcement POST and removing
+the bridge's own device registration are supported.
 """
 import copy
 import html
@@ -29,7 +30,10 @@ def _load(name):
 COUNTRY_TABLE = _load("countries.json")
 COUNTRIES, REGIONS = COUNTRY_TABLE["countries"], COUNTRY_TABLE["regions"]
 DOMAINS = {row["domain"] for row in COUNTRIES.values()}
-ALLOWED_HOSTS = {"api.amazon.com"} | {"alexa." + domain for domain in DOMAINS}
+COMMS_HOST = "alexa-comms-mobile-service.amazon.com"  # global; accepts the account's own retail cookies
+ALLOWED_HOSTS = {"api.amazon.com", COMMS_HOST} | {"alexa." + domain for domain in DOMAINS}
+ANNOUNCE_EXPIRY = "PT60S"  # PT5S (aioamazondevices, alexa-remote2) silently dropped announcements (IKI-99)
+CHIME = "med_ui_success_generic_1-1"  # a whispered (SSML) announcement has no chime of its own
 UA = "AmazonWebView/AmazonAlexa/2.2.663733.0/iOS/18.5/iPhone"
 
 
@@ -55,6 +59,10 @@ class RenewalIncomplete(TransportError):
 
 class UnconfirmedSpeech(Exception):
     pass
+
+
+class Throttled(UnconfirmedSpeech):
+    """Amazon's 429: probably not played, but not proven; never retried."""
 
 
 class TargetUnavailable(ValueError):
@@ -144,7 +152,7 @@ def headers_for(session):
 def retail_get(session, path, transport=request):
     status, headers, body = transport("GET", "https://alexa." + session["domain"] + path,
                                      headers_for(session))
-    if status in (301, 302, 303, 307, 308, 401, 403):
+    if status in (301, 302, 303, 307, 308, 401, 403, 407):
         raise AuthRequired("Amazon sign-in needs renewal")
     if status != 200:
         raise TransportError("Amazon read was not accepted")
@@ -304,11 +312,14 @@ def needs_devices(session, target, now):
             session.get("devices_refreshed_at", 0) <= now - DEVICE_REFRESH_SECONDS)
 
 
-def speech_payload(session, target, text):
-    validate_session(session)
+def check_text(text):
     if (not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT
             or any(ord(c) < 32 and c not in "\n\r\t" for c in text)):
         raise ValueError("Invalid speech text")
+
+
+def known_target(session, target):
+    """The session's one online device matching the target exactly; never another."""
     matches = [d for d in session.get("devices", [])
                if d.get("serial") == target.get("serial")
                and d.get("type") == target.get("type")]
@@ -316,24 +327,88 @@ def speech_payload(session, target, text):
         raise TargetUnavailable("missing")
     if not matches[0].get("online"):
         raise TargetUnavailable("offline")
-    customer = session["customer_id"]
-    operation = {"deviceType": target["type"], "deviceSerialNumber": target["serial"],
-                 "locale": locale_for(session), "customerId": customer,
-                 "textToSpeak": html.escape(text, quote=False),
-                 "target": {"customerId": customer, "devices": [
-                     {"deviceSerialNumber": target["serial"], "deviceTypeId": target["type"]}]},
-                 "skillId": "amzn1.ask.1p.saysomething"}
+    return matches[0]
+
+
+def device_ref(target):
+    return {"deviceSerialNumber": target["serial"], "deviceTypeId": target["type"]}
+
+
+def operation(session, kind, device, **fields):
+    payload = {"deviceType": device["type"], "deviceSerialNumber": device["serial"],
+               "locale": locale_for(session), "customerId": session["customer_id"], **fields}
+    return {"@type": "com.amazon.alexa.behaviors.model.OpaquePayloadOperationNode",
+            "type": kind, "operationPayload": payload}
+
+
+def together(nodes):
+    return nodes[0] if len(nodes) == 1 else {"@type": "com.amazon.alexa.behaviors.model.ParallelNode",
+                                            "nodesToExecute": nodes}
+
+
+def sequence_payload(nodes):
     sequence = {"@type": "com.amazon.alexa.behaviors.model.Sequence",
-                "startNode": {"@type": "com.amazon.alexa.behaviors.model.SerialNode",
-                              "nodesToExecute": [{
-                                  "@type": "com.amazon.alexa.behaviors.model.OpaquePayloadOperationNode",
-                                  "type": "Alexa.Speak", "operationPayload": operation}]}}
+                "startNode": {"@type": "com.amazon.alexa.behaviors.model.SerialNode", "nodesToExecute": nodes}}
     return {"behaviorId": "PREVIEW", "status": "ENABLED",
             "sequenceJson": json.dumps(sequence, separators=(",", ":"))}
 
 
-def speak_once(session, target, text, transport=request):
-    payload = speech_payload(session, target, text)
+def speak_node(session, target, spoken):
+    return operation(session, "Alexa.Speak", target, textToSpeak=spoken, skillId="amzn1.ask.1p.saysomething",
+                     target={"customerId": session["customer_id"], "devices": [device_ref(target)]})
+
+
+def speech_payload(session, target, text):
+    validate_session(session)
+    check_text(text)
+    known_target(session, target)
+    return sequence_payload([speak_node(session, target, html.escape(text, quote=False))])
+
+
+def whispered(text):
+    """SSML built here from escaped plain text; the agent never supplies markup."""
+    return '<speak><amazon:effect name="whispered">%s</amazon:effect></speak>' % html.escape(text, quote=False)
+
+
+def announcement_payload(session, targets, text, style="announce", whisper=False, title="", volume=None,
+                         volumes=None):
+    """One sequence for every target: optional volume change, the speech, then the earlier volumes back.
+    Announce: one AlexaAnnouncement for all targets (separate calls drew 429s), plain text so it chimes, or SSML
+    after a chime sound when whispered (SSML inside type text is silently dropped). Speak: one Alexa.Speak per
+    Echo. The volume changes only on Echos whose current level is known (`volumes`)."""
+    validate_session(session)
+    check_text(text)
+    if style not in ("announce", "speak") or not targets:
+        raise ValueError("Invalid announcement")
+    targets = [known_target(session, t) for t in targets]
+    if len({(t["serial"], t["type"]) for t in targets}) != len(targets):
+        raise ValueError("Duplicate target")
+    if style == "announce":
+        content = {"locale": locale_for(session), "display": {"title": title or "Alexa", "body": text},
+                   "speak": {"type": "ssml", "value": whispered(text)} if whisper else {"type": "text", "value": text}}
+        speech = [operation(session, "AlexaAnnouncement", targets[0], expireAfter=ANNOUNCE_EXPIRY,
+                            content=[content], skillId="amzn1.ask.1p.routines.messaging",
+                            target={"customerId": session["customer_id"], "devices": [device_ref(t) for t in targets]})]
+        if whisper:
+            speech.insert(0, together([operation(session, "Alexa.Sound", t, soundStringId=CHIME,
+                                                 skillId="amzn1.ask.1p.sound") for t in targets]))
+    else:
+        spoken = whispered(text) if whisper else html.escape(text, quote=False)
+        speech = [together([speak_node(session, t, spoken) for t in targets])]
+    nodes = speech
+    known = [(t, (volumes or {}).get((t["serial"], t["type"]))) for t in targets]
+    known = [(t, level) for t, level in known if isinstance(level, int) and 0 <= level <= 100]
+    if volume is not None and known:
+        if not isinstance(volume, int) or not 0 <= volume <= 100:
+            raise ValueError("Invalid volume")
+        nodes = ([together([operation(session, "Alexa.DeviceControls.Volume", t, value=volume) for t, _ in known])]
+                 + speech + [together([operation(session, "Alexa.DeviceControls.Volume", t, value=level)
+                                       for t, level in known])])
+    return sequence_payload(nodes)
+
+
+def post_sequence(session, payload, transport=request):
+    """The one POST for a speech or announcement sequence; never retried."""
     headers = headers_for(session)
     if not headers.get("csrf"):
         raise AuthRequired("Missing CSRF before speech")
@@ -344,8 +419,53 @@ def speak_once(session, target, text, transport=request):
             json.dumps(payload, ensure_ascii=False).encode("utf-8"))
     except TransportError:
         raise UnconfirmedSpeech("Speech outcome unknown; no retry") from None
-    if status in (401, 403):
+    if status in (401, 403, 407):
         raise AuthRequired("Speech rejected; do not replay this job")
+    if status == 429:
+        raise Throttled("Amazon is limiting requests; no retry")
     if status != 200:
         raise UnconfirmedSpeech("Speech not confirmed; no retry")
     return "accepted_by_amazon"
+
+
+def speak_once(session, target, text, transport=request):
+    return post_sequence(session, speech_payload(session, target, text), transport)
+
+
+def announce_once(session, targets, text, transport=request, **options):
+    return post_sequence(session, announcement_payload(session, targets, text, **options), transport)
+
+
+def dnd_states(session, transport=request):
+    """{(serial, type): Do Not Disturb on} for the account's devices."""
+    reply = retail_get(session, "/api/dnd/device-status-list", transport)
+    return {(row.get("deviceSerialNumber"), row.get("deviceType")): row.get("enabled") is True
+            for row in reply.get("doNotDisturbDeviceStatusList", []) if isinstance(row, dict)}
+
+
+def device_volumes(session, transport=request):
+    """{(serial, type): speaker volume} where Amazon reports one; some Echos are missing (IKI-99)."""
+    reply = retail_get(session, "/api/devices/deviceType/dsn/audio/v1/allDeviceVolumes", transport)
+    return {(row.get("dsn"), row.get("deviceType")): row["speakerVolume"]
+            for row in reply.get("volumes", [])
+            if isinstance(row, dict) and isinstance(row.get("speakerVolume"), int)}
+
+
+def announcements_allowed(session, target, transport=request):
+    """False if the Echo's Communications or Announcements setting is off (an announcement would be silently
+    dropped); True if both are on; None if it can't be told. Advisory only: the host is often unavailable."""
+    if not all(re.fullmatch(r"[A-Za-z0-9]{1,64}", str(target.get(k, ""))) for k in ("serial", "type")):
+        return None
+    url = ("https://%s/devicesTypes/%s/deviceId/%s/preferences?devicePreferences=communications"
+           "&devicePreferences=announcements" % (COMMS_HOST, target["type"], target["serial"]))
+    try:
+        status, _, body = transport("GET", url, headers_for(session))
+        if status != 200:
+            return None
+        states = {row.get("devicePreference"): row.get("state")
+                  for row in json_body(body).get("devicePermissionsPreferences", []) if isinstance(row, dict)}
+    except (TransportError, AuthRequired):
+        return None
+    if "OFF" in (states.get("communications"), states.get("announcements")):
+        return False
+    return True if states.get("communications") == "ON" and states.get("announcements") == "ON" else None

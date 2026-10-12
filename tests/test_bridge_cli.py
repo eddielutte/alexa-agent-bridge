@@ -25,7 +25,7 @@ class FakeAsk:
     def __init__(self, permission="ALLOWED", credentials_missing=True, configured=False):
         self.calls, self.utterances = [], []
         self.permission, self.credentials_missing, self.configured = permission, credentials_missing, configured
-        self.bodies, self.deregistration = {}, None
+        self.bodies, self.deregistration, self.skill_status = {}, None, {}
 
     def __call__(self, args, **kwargs):
         self.calls.append(args)
@@ -59,9 +59,9 @@ class FakeAsk:
             if (utterance.startswith("open") and not self.configured) or "repair" in utterance:
                 card = {"type": "Simple", "content": json.dumps(
                     {"schema": 2, "skill_id": SKILL, "user_id": "USER", "setup_token": "FAKE-SETUP"})}
-            if "check cloud status" in utterance and self.deregistration:  # (result, request it answers)
-                card = {"type": "Simple", "content": json.dumps({"skill_id": SKILL, "deregistration":
-                        self.deregistration[0], "for": self.deregistration[1]})}
+            if "check cloud status" in utterance and (self.deregistration or self.skill_status):
+                removal = {"deregistration": self.deregistration[0], "for": self.deregistration[1]}                     if self.deregistration else {}  # (result, request it answers)
+                card = {"type": "Simple", "content": json.dumps({"skill_id": SKILL, **removal, **self.skill_status})}
             text = ("Cloud authentication renewal succeeded." if "renew" in utterance else "Setup is saved.")
             reply = {"status": "SUCCESSFUL", "result": {"skillExecutionInfo": {"invocations": [
                 {"invocationResponse": {"body": {"response": {"outputSpeech": {"text": text},
@@ -890,6 +890,139 @@ class CliTests(unittest.TestCase):
             core.doctor(self.state, fetch=lambda url: None)
         notes = json.loads((Path(self.tmp.name) / "country-notes.json").read_text())
         self.assertFalse(all(notes["GB"]["ok"].values()))
+
+    def skill(self, ask, outcome="accepted_by_amazon", reason=None):
+        """A sender that plays the skill: it applies announcement settings and keeps receipts like the real one."""
+        messages, stored = [], core.read_private(core.ANNOUNCE_FILE)
+        ask.key_hash = core.hashlib.sha256(stored["key"].encode()).hexdigest() if stored else None
+        def sender(method, url, headers, data, hosts, *rest):
+            if "auth/o2/token" in url:
+                return 200, b'{"access_token":"FAKE-TOKEN"}'
+            body = json.loads(data)["data"]
+            messages.append(body)
+            if body["kind"] == "announce_config":
+                change = json.loads(body["payload"])
+                ask.skill_status["announcements"] = {"enabled": change.get("enabled", True),
+                                                     "echoes": change.get("echoes", []), "key": True}
+                ask.key_hash = change.get("key_hash", ask.key_hash)
+            if body["kind"] == "announce" and outcome:
+                self.assertEqual(core.hashlib.sha256(body["announce_key"].encode()).hexdigest(), ask.key_hash)
+                ask.skill_status["announcement"] = {"id": body["announce_id"], "state": outcome,
+                                                    "echoes": {"Office Echo": outcome}, **({"reason": reason} if reason else {})}
+            return 202, b""
+        return sender, messages
+
+    def test_enrol_hands_the_skill_an_announcement_key_and_keeps_it_privately(self):
+        state = self.sign_in()
+        state["skill_id"] = SKILL
+        sent = []
+        def sender(method, url, headers, data, hosts):
+            sent.append(data)
+            return (200, b'{"access_token":"FAKE-TOKEN"}') if "auth/o2/token" in url else (202, b"")
+        with patch.dict(os.environ, {"BRIDGE_WEBHOOK_URL": "https://example.test/hook", "BRIDGE_WEBHOOK_KEY": "FAKE-KEY"}):
+            core.enrol(state, FakeAsk(), sleep=lambda s: None, sender=sender)
+        stored = core.read_private(core.ANNOUNCE_FILE)
+        payload = json.loads(json.loads(sent[-1])["data"]["payload"])
+        self.assertEqual(payload["announce_key_hash"], core.hashlib.sha256(stored["key"].encode()).hexdigest())
+        self.assertEqual(stored["user_id"], "USER")
+        self.assertNotIn(stored["key"], self.out.getvalue())
+
+    def test_first_announcement_hands_over_a_key_then_reports_each_echo(self):
+        state, ask = self.installed(), FakeAsk(configured=True)
+        sender, messages = self.skill(ask)
+        core.announce(state, ["Office Echo"], "It's bedtime.", whisper=True, volume=30, runner=ask,
+                      sleep=lambda s: None, sender=sender)
+        self.assertEqual([m["kind"] for m in messages], ["announce_config", "announce"])
+        said = messages[-1]
+        self.assertEqual((said["targets"], said["text"], said["style"], said["whisper"], said["volume"]),
+                         ('["Office Echo"]', "It's bedtime.", "announce", "1", "30"))
+        self.assertTrue(all(isinstance(v, str) for v in said.values()))  # Skill Messaging carries strings only
+        event = self.events()[-1]
+        self.assertEqual((event["event"], event["echoes"]), ("announced", {"Office Echo": "accepted_by_amazon"}))
+        key = core.read_private(core.ANNOUNCE_FILE)["key"]
+        self.assertNotIn(key, self.out.getvalue())
+        self.assertNotIn("It's bedtime", (Path(self.tmp.name) / "state.json").read_text())
+        messages.clear()
+        core.announce(state, ["all"], "Bins tonight.", style="speak", runner=ask, sleep=lambda s: None, sender=sender)
+        self.assertEqual([(m["kind"], m["targets"]) for m in messages], [("announce", '"all"')])  # the key is kept
+
+    def test_refused_throttled_or_unreported_announcements_are_never_resent(self):
+        cases = (("refused", "unknown_echo", "announce_refused"), ("refused", "off", "announce_off"),
+                 ("throttled", None, "announce_throttled"), ("auth_required", None, "announce_auth"))
+        for outcome, reason, category in cases:
+            state, ask = self.installed(), FakeAsk(configured=True)
+            sender, messages = self.skill(ask, outcome, reason)
+            with self.subTest(category=category), self.assertRaises(core.Stop) as stop:
+                core.announce(state, ["Office Echo"], "Hello.", runner=ask, sleep=lambda s: None, sender=sender)
+            self.assertEqual(stop.exception.category, category)
+            self.assertEqual([m["kind"] for m in messages].count("announce"), 1)
+        state, ask = self.installed(), FakeAsk(configured=True)
+        sender, messages = self.skill(ask, outcome=None)  # the skill never reports
+        core.announce(state, ["Office Echo"], "Hello.", runner=ask, sleep=lambda s: None, sender=sender)
+        self.assertEqual(self.events()[-1]["event"], "announce_pending")
+        self.assertEqual([m["kind"] for m in messages].count("announce"), 1)
+
+    def test_bad_announcements_stop_before_anything_is_sent(self):
+        state, ask = self.installed(), FakeAsk(configured=True)
+        sender, messages = self.skill(ask)
+        for names, text, volume in ((["Office Echo"], "", None), (["Office Echo"], "bad\x00", None), ([], "Hi", None),
+                                    (["Office Echo"], "Hi", 101), (["x"] * 21, "Hi", None)):
+            with self.assertRaises(core.Stop) as stop:
+                core.announce(state, names, text, volume=volume, runner=ask, sleep=lambda s: None, sender=sender)
+            self.assertEqual(stop.exception.category, "announce_invalid")
+        with self.assertRaises(core.Stop) as stop:
+            core.announce(state, ["Office Echo"], "界" * 2100, runner=ask, sleep=lambda s: None, sender=sender)
+        self.assertEqual(stop.exception.category, "announce_invalid")  # over Amazon's 6,000-byte message limit
+        self.assertNotIn("announce", [m["kind"] for m in messages])
+        unenrolled = json.loads(json.dumps(state))
+        unenrolled["phases"].pop("enrol")
+        with self.assertRaises(core.Stop):
+            core.announce(unenrolled, ["Office Echo"], "Hi", runner=ask, sleep=lambda s: None, sender=sender)
+
+    def test_quiet_hours_hold_announcements_unless_urgent_in_the_owners_time_zone(self):
+        state, ask = self.installed(), FakeAsk(configured=True)
+        sender, messages = self.skill(ask)
+        utc = core.datetime.now().astimezone().tzinfo.utc
+        with patch.object(core, "time_zone", lambda name: utc):
+            core.announce_config(state, quiet="22:00-07:00", runner=ask, sleep=lambda s: None, sender=sender)
+            self.assertEqual(messages, [])  # quiet hours stay on this computer
+            late, noon = 1791760800 + 23 * 3600, 1791760800 + 12 * 3600  # 23:00 and 12:00 UTC
+            with self.assertRaises(core.Stop) as stop:
+                core.announce(state, ["Office Echo"], "Hi", runner=ask, sleep=lambda s: None, sender=sender, now=late)
+            self.assertEqual(stop.exception.category, "announce_quiet_hours")
+            self.assertEqual(messages, [])
+            core.announce(state, ["Office Echo"], "Hi", urgent=True, runner=ask, sleep=lambda s: None, sender=sender,
+                          now=late)
+            core.announce(state, ["Office Echo"], "Hi", runner=ask, sleep=lambda s: None, sender=sender, now=noon)
+            self.assertEqual([m["kind"] for m in messages].count("announce"), 2)
+        self.assertEqual(state["announce"], {"quiet": "22:00-07:00"})  # GB: Europe/London from the country table
+        for bad in ("10pm-7am", "24:00-07:00"):
+            with self.assertRaises(core.Stop):
+                core.announce_config(state, quiet=bad)
+        state["choices"]["country"] = "US"  # several time zones: quiet hours need one named
+        with self.assertRaises(core.Stop) as stop:
+            core.announce(state, ["Office Echo"], "Hi", runner=ask, sleep=lambda s: None, sender=sender)
+        self.assertEqual(stop.exception.category, "announce_timezone")
+
+    def test_announce_config_changes_the_skills_settings_and_confirms_them(self):
+        state, ask = self.installed(), FakeAsk(configured=True)
+        sender, messages = self.skill(ask)
+        core.announce_config(state, enabled=False, echoes="Office Echo, Kitchen Echo", runner=ask,
+                             sleep=lambda s: None, sender=sender)
+        change = json.loads(messages[-1]["payload"])
+        self.assertEqual((change["enabled"], change["echoes"]), (False, ["Office Echo", "Kitchen Echo"]))
+        self.assertIn("key_hash", change)  # no key yet on this computer: one goes with the change
+        self.assertEqual(self.events()[-1]["skill"]["enabled"], False)
+        core.announce_config(state, echoes="all", runner=ask, sleep=lambda s: None, sender=sender)
+        self.assertEqual(json.loads(messages[-1]["payload"]), {"echoes": []})  # the existing key is kept
+        core.announce_status(state, runner=ask, sleep=lambda s: None)
+        self.assertEqual(self.events()[-1]["event"], "announce_status")
+        self.assertNoSecrets()
+
+    def test_announce_needs_names_and_text_on_the_command_line(self):
+        from bridge.__main__ import main
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main(["announce", "--to", "Office Echo"])
 
     def test_cli_reports_stops_with_exit_code_two(self):
         from bridge.__main__ import main

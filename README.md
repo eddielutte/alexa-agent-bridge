@@ -77,6 +77,8 @@ sequenceDiagram
 
 Uncertain deliveries are never repeated, answers can't choose a different Echo, and a newer request replaces an older pending answer.
 
+**Announcements:** your agent can also say something on your Echos without being asked, such as a reminder or news it judges important. It names the Echos itself, with a chime or in the answer voice, whispered or at a set volume. Do Not Disturb keeps an Echo quiet, and you can turn announcements off, limit them to some Echos or set quiet hours by asking your agent.
+
 ## Repository
 
 | Path | Contents |

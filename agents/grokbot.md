@@ -14,6 +14,7 @@
 | Setup 2: browser handover | The bot's Chrome with **take control** (one-to-one chats only), and a browser helper that works through the screen, mouse and keyboard | The bot's computer runs **one Chrome per assistant**, each on its own X display, and none of them on the shell's display. On 10 October 2026, the window you see and the display your helper copies on weren't even the same one. So the bridge never guesses a display: you open both sign-in pages yourself, and it reads the clipboard on every display. Don't set `BRIDGE_DISPLAY` |
 | Setup 3: secret store | **Secure secret cards** (“Stored securely, never shown to your Bot”), available to commands as environment variables | Proven. Grokbot can't delete them |
 | Setup 4: saved instructions | **Saved skills**, stored as `SKILL.md` files | Used for `alexa-bridge-maintenance`; the body is kept word for word |
+| Announcing (optional): unattended commands | **Scheduled and triggered tasks**, which can run shell commands on the bot's computer | Proven for a read-only `bridge status` on 12 October 2026, with no approval prompt. A task has no machine setting, so it must name the bot's own computer (see **Announcing**) |
 
 ## How Grokbot does each setup step
 
@@ -71,6 +72,17 @@ A routine can't post into your chat with the owner. Each run's output, including
 > Whenever a “<Display name> Alexa bridge” run finishes and its note contains “Alexa request received”, post its “Alexa request received” and “Alexa response sent” sections into the owner's chat straight away, word for word, with nothing added, even if nobody asked. If a run reports a failure instead, post that briefly. Never include tokens, keys or callback addresses.
 
 Confirm to the owner that the rule is saved. On 11 October 2026, Grokbot saved this rule and posted the two missed notes.
+
+### Announcing
+
+You can say things on the owner's Echos when you judge it useful: MAINTENANCE.md, “Announce”, has the command and the guidance. In the owner's chat, just run it. For announcements you plan ahead, such as a nightly reminder, use a task:
+
+- **Name your own computer in every task.** A task has no machine setting: each run decides where to run commands from its wording. On 12 October 2026, a task that said “your computer” ran its command on the owner's connected Windows PC instead (harmlessly: the bridge isn't there). Write: “Run this only on your own Linux computer, in `/workspace/alexa-bridge`, never on the owner's PC; if you can't, report it rather than running it elsewhere.” Worded that way, the next run used the right computer.
+- **One-off tasks delete themselves.** There's no one-off schedule; a single date in a 5-field cron comes back every year. End a one-off task with “then delete this task”.
+- **Schedules** can run as often as every 5 minutes.
+- **The email trigger** only fires for mail to your own inbox, not the owner's Outlook. For “an important email has arrived” announcements, the owner would forward the mail to you; agree that with them first.
+- **Approval:** an unattended `bridge status` wasn't held for approval on 12 October 2026. A command that makes an Echo speak may be judged differently; if it's held, the card expires unanswered and nothing is said. If the owner sees such a card, ask them to choose **Always allow**.
+- **Tell the owner** what you announced, with the `echoes` outcome, as you do for the “Alexa request received” notes. If a task's announcement fails, post that briefly.
 
 ### Saving the maintenance instructions
 

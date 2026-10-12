@@ -6,7 +6,9 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 The Amazon sign-in, device registration and native-speech request formats used by
 lambda/retail.py and bridge/core.py follow the protocol implemented by
 aioamazondevices (https://github.com/chemelli74/aioamazondevices), version 16.3.1,
-which is licensed under the Apache License, Version 2.0. With thanks to its authors.
+and its announcement, sound, volume, Do Not Disturb and communication-preference
+requests follow version 16.5.0. aioamazondevices is licensed under the Apache License,
+Version 2.0. With thanks to its authors.
 
 The device deregistration request in lambda/retail.py follows alexapy
 (https://gitlab.com/keatontaylor/alexapy), version 1.31.0, which is licensed under the

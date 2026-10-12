@@ -1,6 +1,6 @@
 ---
 name: alexa-bridge-maintenance
-description: Check, repair, re-sign-in, update or remove the owner's Alexa bridge. Use when the owner asks about the Alexa bridge, or says Alexa reported that sign-in needs attention.
+description: Check, repair, re-sign-in, update or remove the owner's Alexa bridge, and announce things on the owner's Echos. Use when the owner asks about the Alexa bridge or its announcements, when Alexa reported that sign-in needs attention, or when you decide the owner should hear something on an Echo now.
 ---
 # Alexa bridge maintenance
 
